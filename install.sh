@@ -133,44 +133,84 @@ system_deps_present() {
 	"$py" -m venv --help >/dev/null 2>&1
 }
 
+# Only ask the package manager for packages that are missing entirely:
+# requesting an installed one (e.g. ffmpeg) makes pacman try to upgrade
+# it, which fails on a system that is not fully updated.  Nothing here
+# is fatal; git and python are checked again afterwards and ffmpeg has
+# a bundled fallback.
+missing_pkgs() {
+	local pm="$1" pkg out=""
+	shift
+	for pkg in "$@"; do
+		case "$pm" in
+		apt) dpkg -s "$pkg" >/dev/null 2>&1 || out="$out $pkg" ;;
+		dnf) rpm -q "$pkg" >/dev/null 2>&1 || out="$out $pkg" ;;
+		pacman) pacman -Q "$pkg" >/dev/null 2>&1 || out="$out $pkg" ;;
+		esac
+	done
+	echo "$out"
+}
+
 install_system_deps() {
 	local pm; pm="$(pkg_manager)"
 	if system_deps_present; then
 		log "System packages present (git, python, ffmpeg)"
 		return
 	fi
-	log "Installing system packages (git, python3.10 + venv, ffmpeg)"
+	local want="" missing
 	case "$pm" in
 	apt)
-		local pkgs="git ffmpeg libsndfile1"
+		want="git ffmpeg libsndfile1"
 		if ! find_python >/dev/null; then
-			pkgs="$pkgs python3.10 python3.10-venv python3.10-dev"
-			# python3.10 is not in newer Ubuntu default repos.
 			if ! apt-cache show python3.10 >/dev/null 2>&1; then
 				warn "python3.10 not in apt; adding deadsnakes PPA"
-				sudo apt-get install -y software-properties-common
-				sudo add-apt-repository -y ppa:deadsnakes/ppa
+				sudo apt-get install -y software-properties-common || true
+				sudo add-apt-repository -y ppa:deadsnakes/ppa || true
 			fi
-		fi
-		sudo apt-get update -qq
-		# shellcheck disable=SC2086
-		sudo apt-get install -y $pkgs
-		local py; py="$(find_python)" || true
-		if [ -n "$py" ] && ! "$py" -m venv --help >/dev/null 2>&1; then
-			sudo apt-get install -y "${py}-venv"
+			want="$want python3.10 python3.10-venv python3.10-dev"
 		fi
 		;;
 	dnf)
-		sudo dnf install -y git ffmpeg-free libsndfile python3.11 || \
-			sudo dnf install -y git ffmpeg libsndfile python3.11
+		want="git ffmpeg-free libsndfile"
+		find_python >/dev/null || want="$want python3.11"
 		;;
 	pacman)
-		sudo pacman -S --needed --noconfirm git ffmpeg libsndfile uv
+		want="git ffmpeg libsndfile"
+		find_python >/dev/null || want="$want uv"
 		;;
 	*)
 		warn "unknown package manager; make sure git, ffmpeg and python 3.10/3.11 are installed"
+		return
 		;;
 	esac
+	# shellcheck disable=SC2086
+	missing="$(missing_pkgs "$pm" $want)"
+	if [ -z "${missing// /}" ]; then
+		log "System packages already installed"
+		return
+	fi
+	log "Installing missing system packages:$missing"
+	# shellcheck disable=SC2086
+	case "$pm" in
+	apt)
+		sudo apt-get update -qq || true
+		sudo apt-get install -y $missing || warn "apt could not install:$missing"
+		;;
+	dnf)
+		sudo dnf install -y $missing || warn "dnf could not install:$missing"
+		;;
+	pacman)
+		sudo pacman -S --needed --noconfirm $missing || \
+			warn "pacman could not install:$missing (run 'sudo pacman -Syu' first if it reported dependency conflicts); continuing"
+		;;
+	esac
+	local py
+	if [ "$pm" = apt ]; then
+		py="$(find_python)" || true
+		if [ -n "$py" ] && ! "$py" -m venv --help >/dev/null 2>&1; then
+			sudo apt-get install -y "$(basename "$py")-venv" || true
+		fi
+	fi
 }
 
 vendor_seedvc() {
@@ -313,6 +353,8 @@ main() {
 	refuse_root
 	command -v sudo >/dev/null || warn "sudo not found; system package steps may fail"
 	install_system_deps
+	command -v git >/dev/null || die "git is required; install it with your package manager and re-run"
+	command -v ffmpeg >/dev/null || warn "system ffmpeg not found; the bundled one from imageio-ffmpeg will be used"
 	local py
 	if ! py="$(find_python)"; then
 		warn "python 3.10/3.11 not found on the system (found: $(python3 --version 2>/dev/null || echo none))"

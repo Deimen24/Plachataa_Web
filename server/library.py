@@ -114,8 +114,9 @@ class Library:
 
 def make_libraries():
 	settings.ensure_dirs()
+	# URLs are relative so the UI works under any reverse-proxy prefix.
 	uploads = Library(settings.UPLOAD_DIR,
-			  settings.DATA_DIR / "uploads.json", "/files/uploads")
+			  settings.DATA_DIR / "uploads.json", "files/uploads")
 	voices = Library(settings.VOICE_DIR, settings.VOICES_FILE,
-			 "/files/voices")
+			 "files/voices")
 	return uploads, voices

@@ -169,7 +169,7 @@ class JobStore:
 				return
 			job["status"] = RUNNING
 			job["started"] = time.time()
-			job["partial_url"] = "/files/outputs/%s.stream.mp3" \
+			job["partial_url"] = "files/outputs/%s.stream.mp3" \
 				% job_id
 			self.current = job_id
 			self._save()
@@ -192,7 +192,7 @@ class JobStore:
 			write_wav(settings.OUTPUT_DIR / out_name, samples, sr)
 			with self.lock:
 				job["output"] = {
-					"url": "/files/outputs/" + out_name,
+					"url": "files/outputs/" + out_name,
 					"file": out_name,
 					"sr": sr,
 					"duration": len(samples) / float(sr),

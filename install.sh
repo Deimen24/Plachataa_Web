@@ -10,6 +10,10 @@
 #   ./install.sh --update-driver     install/upgrade the NVIDIA driver
 #                                    when it is missing or too old
 #   ./install.sh --yes           never prompt (for the above)
+#   ./install.sh --no-service    do not install the systemd service that
+#                                starts the server at boot
+#   ./install.sh --proxy-ip IP   reverse-proxy address whose forwarded
+#                                headers are trusted (default: any)
 #
 set -euo pipefail
 
@@ -26,12 +30,14 @@ FORCE_DEVICE=""
 DOWNLOAD_MODELS=0
 UPDATE_DRIVER=0
 ASSUME_YES=0
+INSTALL_SERVICE=1
+PROXY_IP="*"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
 
 confirm() {
 	[ "$ASSUME_YES" = 1 ] && return 0
@@ -47,6 +53,8 @@ parse_args() {
 		--download-models) DOWNLOAD_MODELS=1 ;;
 		--update-driver) UPDATE_DRIVER=1 ;;
 		--yes|-y) ASSUME_YES=1 ;;
+		--no-service) INSTALL_SERVICE=0 ;;
+		--proxy-ip) shift; PROXY_IP="${1:-*}" ;;
 		-h|--help) usage ;;
 		*) die "unknown option: $1" ;;
 		esac
@@ -241,6 +249,22 @@ download_models() {
 	"$VENV/bin/python" tools/download_models.py
 }
 
+write_env() {
+	[ -f "$ROOT/.env" ] && return 0
+	log "Creating .env"
+	cp "$ROOT/.env.example" "$ROOT/.env"
+	printf '\nPLACHATAA_FORWARDED_ALLOW_IPS=%s\n' "$PROXY_IP" >> "$ROOT/.env"
+}
+
+install_service() {
+	[ "$INSTALL_SERVICE" = 1 ] || return 0
+	if [ ! -d /run/systemd/system ]; then
+		warn "systemd not running; skipping the boot service (use ./run.sh --listen)"
+		return 0
+	fi
+	./service.sh install
+}
+
 main() {
 	parse_args "$@"
 	command -v sudo >/dev/null || warn "sudo not found; system package steps may fail"
@@ -255,9 +279,15 @@ main() {
 	install_python_deps
 	verify
 	[ "$DOWNLOAD_MODELS" = 1 ] && download_models
-	chmod +x run.sh update.sh 2>/dev/null || true
+	chmod +x run.sh update.sh service.sh uninstall.sh 2>/dev/null || true
+	write_env
+	install_service
 	echo
-	log "Done. Start the web UI with:  ./run.sh   (then open http://localhost:7870)"
+	if [ "$INSTALL_SERVICE" = 1 ]; then
+		log "Done. The server runs at boot; manage it with ./service.sh (status|logs|restart)."
+	else
+		log "Done. Start the web UI with:  ./run.sh   (then open http://localhost:7870)"
+	fi
 	[ "$DEVICE" = cpu ] && warn "Running on CPU: conversions will take minutes, not seconds."
 	return 0
 }

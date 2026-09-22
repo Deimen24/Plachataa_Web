@@ -91,4 +91,8 @@ if ($LASTEXITCODE -ne 0 -or $UpdateDriver) {
 	exit $LASTEXITCODE
 }
 if ($DownloadModels) { & $Vpy tools\download_models.py }
+if (Get-ScheduledTask -TaskName "PlachataaWeb" -ErrorAction SilentlyContinue) {
+	Log "Restarting service"
+	& (Join-Path $Root "service.ps1") restart
+}
 Log "Update complete."

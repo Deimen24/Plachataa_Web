@@ -1,0 +1,22 @@
+# Caddy on the reverse-proxy machine. Replace GAMING_PC with the LAN IP
+# or hostname of the PC running Plachataa Web. Caddy handles TLS and
+# WebSockets automatically.
+
+voice.example.com {
+	request_body {
+		max_size 200MB
+	}
+	# Optional auth (generate the hash with: caddy hash-password)
+	# basicauth {
+	# 	me JDJhJDE0JC...
+	# }
+	reverse_proxy GAMING_PC:7870
+}
+
+# Sub-path variant: set PLACHATAA_ROOT_PATH=/voice on the gaming PC.
+# example.com {
+# 	redir /voice /voice/
+# 	handle_path /voice/* {
+# 		reverse_proxy GAMING_PC:7870
+# 	}
+# }

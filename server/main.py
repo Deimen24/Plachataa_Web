@@ -5,13 +5,16 @@ Run with:  python -m server.main [--listen] [--port 7870]
 """
 
 import argparse
+import base64
 import logging
+import logging.handlers
 import os
+import secrets
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -27,8 +30,9 @@ settings.apply_environment()
 settings.ensure_dirs()
 ensure_ffmpeg_on_path()
 
-app = FastAPI(title="Plachataa Web", docs_url="/api/docs",
-	      redoc_url=None)
+# ROOT_PATH is given to uvicorn (not FastAPI): uvicorn then rewrites the
+# stripped path the reverse proxy sends, and routing stays consistent.
+app = FastAPI(title="Plachataa Web", docs_url="/api/docs", redoc_url=None)
 uploads, voices = make_libraries()
 jobs = JobStore()
 
@@ -106,7 +110,37 @@ def _resolve_example(item_id, what):
 		raise HTTPException(404, "%s example not found" % what)
 	return {"path": path, "name": path.name,
 		"duration": probe_duration(path),
-		"url": "/examples/%s/%s" % (parts[1], path.name)}
+		"url": "examples/%s/%s" % (parts[1], path.name)}
+
+
+# ---- auth / health -----------------------------------------------------
+
+def _auth_ok(header):
+	"""Constant-time check of an 'Authorization: Basic ...' header."""
+	if not header or not header.startswith("Basic "):
+		return False
+	try:
+		given = base64.b64decode(header[6:]).decode("utf-8")
+	except (ValueError, UnicodeDecodeError):
+		return False
+	return secrets.compare_digest(given, settings.BASIC_AUTH)
+
+
+@app.middleware("http")
+async def basic_auth(request: Request, call_next):
+	if settings.BASIC_AUTH and not request.url.path.endswith("/api/health"):
+		if not _auth_ok(request.headers.get("authorization")):
+			return Response("authentication required", status_code=401,
+					headers={"WWW-Authenticate":
+						 'Basic realm="Plachataa Web"'})
+	return await call_next(request)
+
+
+@app.get("/api/health")
+def api_health():
+	"""Cheap liveness probe for reverse proxies and monitors."""
+	return {"ok": True, "seedvc": settings.seedvc_present(),
+		"queue": jobs.queue_length(), "current_job": jobs.current}
 
 
 # ---- status ------------------------------------------------------------
@@ -220,7 +254,7 @@ def api_examples():
 					items.append({
 						"id": "example:%s:%s" % (kind, p.name),
 						"name": p.name,
-						"url": "/examples/%s/%s" % (kind, p.name),
+						"url": "examples/%s/%s" % (kind, p.name),
 					})
 		out[kind] = items
 	return out
@@ -345,7 +379,26 @@ def parse_args():
 		       help="developer auto-reload")
 	p.add_argument("--open", action="store_true",
 		       help="open the UI in the default browser once up")
+	p.add_argument("--log-file", default=settings.LOG_FILE,
+		       help="also log to this file (rotated at 5 MB)")
 	return p.parse_args()
+
+
+def setup_logging(log_file):
+	fmt = "%(asctime)s %(name)s: %(message)s"
+	logging.basicConfig(level=logging.INFO, format=fmt)
+	if not log_file:
+		return
+	path = Path(log_file)
+	if not path.is_absolute():
+		path = settings.ROOT_DIR / path
+	path.parent.mkdir(parents=True, exist_ok=True)
+	handler = logging.handlers.RotatingFileHandler(
+		path, maxBytes=5 << 20, backupCount=3, encoding="utf-8")
+	handler.setFormatter(logging.Formatter(fmt))
+	logging.getLogger().addHandler(handler)
+	for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+		logging.getLogger(name).addHandler(handler)
 
 
 def open_browser_later(url, delay=2.5):
@@ -364,21 +417,27 @@ def open_browser_later(url, delay=2.5):
 def main():
 	import uvicorn
 	args = parse_args()
-	logging.basicConfig(level=logging.INFO,
-			    format="%(asctime)s %(name)s: %(message)s")
+	setup_logging(args.log_file)
 	host = "0.0.0.0" if args.listen else args.host
 	for family in [f for f in args.preload.split(",") if f]:
 		engine.load_in_background(f.strip())
 	log.info("seed-vc dir: %s (present=%s)", settings.SEEDVC_DIR,
 		 settings.seedvc_present())
-	url = "http://%s:%d/" % ("localhost" if host == "0.0.0.0" else host,
-				 args.port)
+	url = "http://%s:%d%s/" % ("localhost" if host == "0.0.0.0" else host,
+				   args.port, settings.ROOT_PATH)
 	log.info("open %s in your browser", url)
+	if settings.ROOT_PATH:
+		log.info("serving under prefix %s (reverse proxy mode)",
+			 settings.ROOT_PATH)
+	if settings.BASIC_AUTH:
+		log.info("HTTP basic auth enabled")
 	if args.open:
 		open_browser_later(url)
 	target = "server.main:app" if args.reload else app
 	uvicorn.run(target, host=host, port=args.port, reload=args.reload,
-		    log_level="info")
+		    log_level="info", proxy_headers=True,
+		    forwarded_allow_ips=settings.FORWARDED_ALLOW_IPS,
+		    root_path=settings.ROOT_PATH)
 
 
 if __name__ == "__main__":

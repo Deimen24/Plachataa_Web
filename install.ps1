@@ -20,6 +20,13 @@ Install/upgrade the NVIDIA driver when missing or too old.
 
 .PARAMETER Yes
 Never prompt.
+
+.PARAMETER NoService
+Do not register the startup task that runs the server at boot.
+
+.PARAMETER ProxyIp
+Reverse-proxy address whose X-Forwarded-* headers are trusted
+(default: any).
 #>
 [CmdletBinding()]
 param(
@@ -27,7 +34,9 @@ param(
 	[switch]$Cuda,
 	[switch]$DownloadModels,
 	[switch]$UpdateDriver,
-	[switch]$Yes
+	[switch]$Yes,
+	[switch]$NoService,
+	[string]$ProxyIp = "*"
 )
 
 $ErrorActionPreference = "Stop"
@@ -222,6 +231,14 @@ function Verify($vpy) {
 	if ($LASTEXITCODE -ne 0) { Die "verification failed" }
 }
 
+function Write-Env {
+	$envfile = Join-Path $Root ".env"
+	if (Test-Path $envfile) { return }
+	Log "Creating .env"
+	Copy-Item (Join-Path $Root ".env.example") $envfile
+	Add-Content $envfile "`nPLACHATAA_FORWARDED_ALLOW_IPS=$ProxyIp"
+}
+
 function Main {
 	Ensure-Git
 	$py = Ensure-Python
@@ -236,8 +253,16 @@ function Main {
 		Log "Pre-downloading models (several GB, resumable)"
 		& $vpy tools\download_models.py
 	}
+	Write-Env
+	if (-not $NoService) {
+		& (Join-Path $Root "service.ps1") install
+	}
 	Write-Host ""
-	Log "Done. Double-click run.bat (or .\run.ps1) and open http://localhost:7870"
+	if ($NoService) {
+		Log "Done. Double-click run.bat (or .\run.ps1) and open http://localhost:7870"
+	} else {
+		Log "Done. The server runs at boot; manage it with service.bat (status|logs|restart)."
+	}
 	if ($script:Device -eq "cpu") { Warn "Running on CPU: conversions take minutes, not seconds." }
 }
 

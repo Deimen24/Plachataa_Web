@@ -93,7 +93,15 @@ main() {
 			"$VENV/bin/python" tools/download_models.py
 		fi
 	done
+	restart_service
 	log "Update complete."
+}
+
+restart_service() {
+	if [ -f /etc/systemd/system/plachataa-web.service ]; then
+		log "Restarting service"
+		./service.sh restart
+	fi
 }
 
 main

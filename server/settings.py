@@ -14,13 +14,29 @@ Environment variables override the defaults:
   PLACHATAA_PORT         bind port (default 7870)
   PLACHATAA_DEVICE       cuda | cpu | mps (default: auto)
   PLACHATAA_MAX_UPLOAD_MB   upload size limit (default 200)
+  PLACHATAA_ROOT_PATH    URL prefix when served under a sub-path by a
+                         reverse proxy, e.g. /voice (default: none)
+  PLACHATAA_FORWARDED_ALLOW_IPS  proxies whose X-Forwarded-* headers are
+                         trusted (default 127.0.0.1; "*" for any)
+  PLACHATAA_BASIC_AUTH   user:password to require HTTP basic auth
+                         (default: none; let the proxy authenticate)
+  PLACHATAA_LOG_FILE     also write logs to this file (rotated)
   HF_HOME                HuggingFace cache; defaults to DATA_DIR/hf_cache
+
+A .env file in the repository root is loaded first, so the service unit
+and the run scripts see the same configuration.
 """
 
 import os
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+
+try:
+	from dotenv import load_dotenv
+	load_dotenv(ROOT_DIR / ".env", override=False)
+except ImportError:
+	pass
 
 SEEDVC_DIR = Path(os.environ.get("PLACHATAA_SEEDVC_DIR",
 			      ROOT_DIR / "vendor" / "seed-vc")).resolve()
@@ -39,6 +55,12 @@ PORT = int(os.environ.get("PLACHATAA_PORT", "7870"))
 DEVICE = os.environ.get("PLACHATAA_DEVICE", "auto")
 MAX_UPLOAD_BYTES = int(os.environ.get("PLACHATAA_MAX_UPLOAD_MB", "200")) \
 	* 1024 * 1024
+ROOT_PATH = os.environ.get("PLACHATAA_ROOT_PATH", "").rstrip("/")
+FORWARDED_ALLOW_IPS = os.environ.get("PLACHATAA_FORWARDED_ALLOW_IPS",
+				     "127.0.0.1")
+BASIC_AUTH = os.environ.get("PLACHATAA_BASIC_AUTH", "")
+LOG_FILE = os.environ.get("PLACHATAA_LOG_FILE", "")
+LOG_DIR = DATA_DIR / "logs"
 
 # Reference audio longer than this is clipped by seed-vc itself.
 MAX_REFERENCE_SECONDS = 25

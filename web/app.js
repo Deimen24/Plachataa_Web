@@ -152,7 +152,7 @@ function render_model_pill(pill, fam, st) {
 
 async function poll_status() {
 	try {
-		state.status = await api("/api/status");
+		state.status = await api("api/status");
 	} catch (e) {
 		state.status = null;
 	}
@@ -197,7 +197,7 @@ async function upload_file(slot, file, name) {
 		form.append("name", name);
 	toast("Uploading " + (name || file.name) + "…");
 	try {
-		const item = await api("/api/uploads", { method: "POST", body: form });
+		const item = await api("api/uploads", { method: "POST", body: form });
 		state.uploads.unshift(item);
 		set_slot(slot, item);
 		toast("Uploaded " + item.name);
@@ -269,7 +269,7 @@ function render_recent() {
 
 async function delete_upload(item) {
 	try {
-		await api("/api/uploads/" + item.id, { method: "DELETE" });
+		await api("api/uploads/" + item.id, { method: "DELETE" });
 	} catch (e) {
 		toast(e.message, true);
 		return;
@@ -289,7 +289,7 @@ async function delete_upload(item) {
 async function load_examples() {
 	let ex;
 	try {
-		ex = await api("/api/examples");
+		ex = await api("api/examples");
 	} catch (e) {
 		return;
 	}
@@ -356,7 +356,7 @@ async function toggle_record(slot, btn) {
 
 async function load_voices() {
 	try {
-		state.voices = await api("/api/voices");
+		state.voices = await api("api/voices");
 	} catch (e) {
 		state.voices = [];
 	}
@@ -402,7 +402,7 @@ async function save_voice() {
 	if (!name)
 		return;
 	try {
-		const v = await post_json("/api/voices/from-upload",
+		const v = await post_json("api/voices/from-upload",
 					  { upload_id: item.id, name });
 		state.voices.unshift(v);
 		use_voice(v);
@@ -417,7 +417,7 @@ async function rename_voice(v) {
 	if (!name || name === v.name)
 		return;
 	try {
-		const nv = await api("/api/voices/" + v.id, {
+		const nv = await api("api/voices/" + v.id, {
 			method: "PATCH",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ name }),
@@ -433,7 +433,7 @@ async function delete_voice(v) {
 	if (!confirm("Delete voice “" + v.name + "”?"))
 		return;
 	try {
-		await api("/api/voices/" + v.id, { method: "DELETE" });
+		await api("api/voices/" + v.id, { method: "DELETE" });
 	} catch (e) {
 		toast(e.message, true);
 		return;
@@ -447,7 +447,7 @@ async function delete_voice(v) {
 /* ---- model & params -------------------------------------------------- */
 
 async function load_models() {
-	state.models = await api("/api/models");
+	state.models = await api("api/models");
 	const sel = $("#model");
 	for (const m of state.models) {
 		const opt = el("option", null, m.label);
@@ -579,7 +579,7 @@ async function convert() {
 		req.reference_id = ref.id;
 	$("#btn-convert").disabled = true;
 	try {
-		const job = await post_json("/api/convert", req);
+		const job = await post_json("api/convert", req);
 		state.jobs.unshift(job);
 		render_jobs();
 		start_job_polling();
@@ -604,7 +604,7 @@ function start_job_polling() {
 
 async function poll_jobs() {
 	try {
-		state.jobs = await api("/api/jobs");
+		state.jobs = await api("api/jobs");
 	} catch (e) {
 		return;
 	}
@@ -722,7 +722,7 @@ function out_filename(job) {
 
 async function job_cancel(job) {
 	try {
-		await post_json("/api/jobs/" + job.id + "/cancel", {});
+		await post_json("api/jobs/" + job.id + "/cancel", {});
 	} catch (e) {
 		toast(e.message, true);
 	}
@@ -731,7 +731,7 @@ async function job_cancel(job) {
 
 async function job_delete(job) {
 	try {
-		await api("/api/jobs/" + job.id, { method: "DELETE" });
+		await api("api/jobs/" + job.id, { method: "DELETE" });
 	} catch (e) {
 		toast(e.message, true);
 	}
@@ -740,7 +740,7 @@ async function job_delete(job) {
 
 async function job_as_source(job) {
 	try {
-		const item = await post_json("/api/jobs/" + job.id + "/use-as-source", {});
+		const item = await post_json("api/jobs/" + job.id + "/use-as-source", {});
 		state.uploads.unshift(item);
 		set_slot("source", item);
 		window.scrollTo({ top: 0, behavior: "smooth" });
@@ -751,7 +751,7 @@ async function job_as_source(job) {
 
 async function clear_jobs() {
 	try {
-		await post_json("/api/jobs/clear", {});
+		await post_json("api/jobs/clear", {});
 	} catch (e) {
 		toast(e.message, true);
 	}
@@ -769,7 +769,7 @@ function setup_settings() {
 	$("#btn-settings-close").addEventListener("click", () => dlg.close());
 	$$("[data-load]").forEach(b => b.addEventListener("click", async () => {
 		try {
-			await post_json("/api/models/" + b.dataset.load + "/load", {});
+			await post_json("api/models/" + b.dataset.load + "/load", {});
 			toast("Loading " + b.dataset.load + " in the background");
 		} catch (e) {
 			toast(e.message, true);
@@ -778,7 +778,7 @@ function setup_settings() {
 	}));
 	$$("[data-unload]").forEach(b => b.addEventListener("click", async () => {
 		try {
-			await post_json("/api/models/" + b.dataset.unload + "/unload", {});
+			await post_json("api/models/" + b.dataset.unload + "/unload", {});
 			toast("Unloaded " + b.dataset.unload);
 		} catch (e) {
 			toast(e.message, true);
@@ -801,7 +801,7 @@ async function init() {
 
 	await Promise.all([load_models(), load_examples(), load_voices()]);
 	try {
-		state.uploads = await api("/api/uploads");
+		state.uploads = await api("api/uploads");
 	} catch (e) {
 		state.uploads = [];
 	}

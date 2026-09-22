@@ -13,14 +13,19 @@ import secrets
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+import asyncio
+import json
+
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, \
+	WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import settings
 from .audio import ffmpeg_path, probe_duration, ensure_ffmpeg_on_path
-from .engine import engine, MODELS, MODEL_INFO, EngineError
+from .engine import engine, MODELS, MODEL_INFO, FAMILIES, EngineError
+from .realtime import DEFAULT_PARAMS as RT_DEFAULTS, PARAM_LIMITS as RT_LIMITS
 from .jobs import JobStore
 from .library import make_libraries
 
@@ -163,7 +168,7 @@ def api_models():
 
 @app.post("/api/models/{family}/load")
 def api_model_load(family: str):
-	if family not in ("v1", "v2"):
+	if family not in FAMILIES:
 		raise HTTPException(404, "unknown model family")
 	engine.load_in_background(family)
 	return {"ok": True}
@@ -171,10 +176,12 @@ def api_model_load(family: str):
 
 @app.post("/api/models/{family}/unload")
 def api_model_unload(family: str):
-	if family not in ("v1", "v2"):
+	if family not in FAMILIES:
 		raise HTTPException(404, "unknown model family")
 	if jobs.current is not None:
 		raise HTTPException(409, "a job is running")
+	if family == "rt" and rt_active:
+		raise HTTPException(409, "a real-time session is active")
 	engine.unload(family)
 	return {"ok": True}
 
@@ -333,6 +340,149 @@ def api_job_as_source(job_id: str):
 	path = settings.OUTPUT_DIR / job["output"]["file"]
 	label = "converted-%s.wav" % job_id
 	return uploads.add_copy(label, path)
+
+
+# ---- real-time voice conversion ----------------------------------------
+
+rt_active = False
+rt_tokens = {}
+RT_TOKEN_TTL = 120
+
+
+@app.get("/api/realtime/info")
+def api_realtime_info():
+	return {"defaults": RT_DEFAULTS, "limits": RT_LIMITS,
+		"active": rt_active,
+		"loaded": engine.rt is not None}
+
+
+@app.post("/api/realtime/token")
+def api_realtime_token():
+	"""
+	Browsers cannot send an Authorization header on a WebSocket, so the
+	(basic-auth protected) page fetches a short-lived token first.
+	"""
+	now = time.time()
+	for key in [k for k, exp in rt_tokens.items() if exp < now]:
+		rt_tokens.pop(key, None)
+	token = secrets.token_urlsafe(24)
+	rt_tokens[token] = now + RT_TOKEN_TTL
+	return {"token": token}
+
+
+def _rt_reference(msg):
+	if msg.get("voice_id"):
+		return _resolve_audio(voices, msg["voice_id"], "voice")["path"]
+	ref_id = msg.get("reference_id") or ""
+	ex = _resolve_example(ref_id, "reference")
+	if ex:
+		return ex["path"]
+	return _resolve_audio(uploads, ref_id, "reference")["path"]
+
+
+async def _rt_send(ws, obj):
+	await ws.send_text(json.dumps(obj))
+
+
+@app.websocket("/ws/realtime")
+async def ws_realtime(ws: WebSocket):
+	global rt_active
+	token = ws.query_params.get("token", "")
+	if settings.BASIC_AUTH and rt_tokens.pop(token, 0) < time.time():
+		await ws.close(code=4401)
+		return
+	await ws.accept()
+	if rt_active:
+		await _rt_send(ws, {"type": "error",
+				    "message": "another real-time session is active"})
+		await ws.close(code=4409)
+		return
+	rt_active = True
+	session = None
+	worker = None
+	queue = asyncio.Queue(maxsize=3)
+	dropped = 0
+	try:
+		while True:
+			msg = await ws.receive()
+			if msg.get("type") == "websocket.disconnect":
+				break
+			if msg.get("text") is not None:
+				cmd = json.loads(msg["text"])
+				if cmd.get("type") == "start":
+					session = await _rt_start(ws, cmd)
+					if session is None:
+						break
+					worker = asyncio.create_task(
+						_rt_worker(ws, session, queue))
+				elif cmd.get("type") == "stop":
+					break
+			elif msg.get("bytes") is not None and session is not None:
+				if queue.full():
+					queue.get_nowait()
+					dropped += 1
+					if dropped % 10 == 1:
+						await _rt_send(ws, {"type": "warning",
+								    "message": "GPU too slow for this block size; dropped %d blocks" % dropped})
+				queue.put_nowait(msg["bytes"])
+	except WebSocketDisconnect:
+		pass
+	except Exception as exc:
+		log.exception("real-time session failed")
+		try:
+			await _rt_send(ws, {"type": "error",
+					    "message": "%s: %s" % (type(exc).__name__, exc)})
+		except Exception:
+			pass
+	finally:
+		rt_active = False
+		if worker is not None:
+			worker.cancel()
+		engine._free_memory()
+		try:
+			await ws.close()
+		except Exception:
+			pass
+
+
+async def _rt_start(ws, cmd):
+	from .realtime import RealtimeSession
+	try:
+		ref = _rt_reference(cmd)
+	except HTTPException as exc:
+		await _rt_send(ws, {"type": "error", "message": exc.detail})
+		return None
+	await _rt_send(ws, {"type": "loading"})
+	try:
+		await asyncio.to_thread(engine.load, "rt")
+		session = await asyncio.to_thread(
+			RealtimeSession, engine.rt, ref, cmd.get("params") or {},
+			cmd.get("sample_rate"))
+	except Exception as exc:
+		log.exception("real-time start failed")
+		await _rt_send(ws, {"type": "error",
+				    "message": "%s: %s" % (type(exc).__name__, exc)})
+		return None
+	info = session.info()
+	info["type"] = "ready"
+	await _rt_send(ws, info)
+	return session
+
+
+async def _rt_worker(ws, session, queue):
+	import numpy as np
+	n = 0
+	while True:
+		data = await queue.get()
+		pcm = np.frombuffer(data, dtype=np.float32).copy()
+		if pcm.size != session.client_block:
+			continue
+		out = await asyncio.to_thread(session.process, pcm)
+		await ws.send_bytes(out.astype(np.float32).tobytes())
+		n += 1
+		if n % 8 == 0:
+			await _rt_send(ws, {"type": "stats", **session.stats,
+					    "queued": queue.qsize()})
 
 
 # ---- files & UI --------------------------------------------------------

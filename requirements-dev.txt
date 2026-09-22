@@ -1,0 +1,2 @@
+# Only needed to run tools/test_realtime.py (starlette's TestClient).
+httpx2

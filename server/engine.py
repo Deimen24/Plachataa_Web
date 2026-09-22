@@ -26,6 +26,7 @@ MODEL_V1 = "v1"
 MODEL_V1_F0 = "v1_f0"
 MODEL_V2 = "v2"
 MODELS = (MODEL_V1, MODEL_V1_F0, MODEL_V2)
+FAMILIES = ("v1", "v2", "rt")
 
 MODEL_INFO = {
 	MODEL_V1: {
@@ -103,6 +104,7 @@ class Engine:
 		self.lock = threading.Lock()
 		self.v1 = None
 		self.v2 = None
+		self.rt = None
 		self._device = None
 		self._torch = None
 		self.load_times = {}
@@ -141,6 +143,7 @@ class Engine:
 			"loaded": {
 				"v1": self.v1 is not None,
 				"v2": self.v2 is not None,
+				"rt": self.rt is not None,
 			},
 			"loading": sorted(self.loading),
 			"load_errors": self.load_errors,
@@ -157,7 +160,7 @@ class Engine:
 	# ---- loading ---------------------------------------------------
 
 	def load(self, family):
-		if family not in ("v1", "v2"):
+		if family not in FAMILIES:
 			raise EngineError("unknown model family " + str(family))
 		with self.lock:
 			self.loading.add(family)
@@ -165,8 +168,10 @@ class Engine:
 			try:
 				if family == "v1":
 					self._load_v1()
-				else:
+				elif family == "v2":
 					self._load_v2()
+				else:
+					self._load_rt()
 			except Exception as exc:
 				self.load_errors[family] = "%s: %s" % (
 					type(exc).__name__, exc)
@@ -224,6 +229,18 @@ class Engine:
 		self.load_times["v2"] = round(time.time() - t0, 1)
 		log.info("v2 ready in %.1fs", self.load_times["v2"])
 
+	def _load_rt(self):
+		if self.rt is not None:
+			return
+		bootstrap()
+		t0 = time.time()
+		log.info("loading seed-vc real-time models (this downloads ~2 GB "
+			 "the first time)")
+		from .realtime import RealtimeModels
+		self.rt = RealtimeModels(self.device())
+		self.load_times["rt"] = round(time.time() - t0, 1)
+		log.info("rt ready in %.1fs", self.load_times["rt"])
+
 	def _dtype(self):
 		torch = self.torch()
 		if self.device().type == "cuda":
@@ -238,6 +255,9 @@ class Engine:
 			if family in (None, "v2"):
 				self.v2 = None
 				self.load_times.pop("v2", None)
+			if family in (None, "rt"):
+				self.rt = None
+				self.load_times.pop("rt", None)
 			self._free_memory()
 
 	def _free_memory(self):

@@ -152,6 +152,7 @@ pre {
 	font-size: 0.9rem;
 }
 .select.wide { width: 100%; }
+.drop .select { max-width: 14rem; }
 
 .picked {
 	background: var(--panel-2);
@@ -256,3 +257,16 @@ dialog .row { margin: 0.75rem 0; }
 	z-index: 10;
 }
 .toast.err { border-color: var(--err); }
+
+.rt-stats {
+	font-size: 0.8rem;
+	color: var(--muted);
+	display: flex;
+	gap: 1rem;
+	flex-wrap: wrap;
+	min-height: 1.2em;
+}
+.rt-stats .bad { color: var(--warn); }
+.rt-stats .err { color: var(--err); }
+#rt-card .field .select { min-width: 12rem; max-width: 100%; }
+#rt-card.live { border-color: var(--ok); }

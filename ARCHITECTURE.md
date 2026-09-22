@@ -5,15 +5,16 @@ Plachataa Web is a thin, local-only web layer over the unmodified
 in `vendor/seed-vc` is patched; the wrapper adapts to it.
 
 ```
- browser ──HTTP/JSON──▶ FastAPI (server/main.py)
-                            │
-        uploads/voices ◀────┤ library.py  (data/uploads, data/voices)
-                            │
-                        jobs.py  ── one worker thread ──▶ engine.py
-                            │                               │
-                       data/jobs.json                 vendor/seed-vc
-                       data/outputs/*.wav          (SeedVCWrapper, v2
-                                                    VoiceConversionWrapper)
+ reverse proxy (other machine, TLS, optional auth)
+      │  HTTP/JSON + WebSocket
+      ▼
+ FastAPI (server/main.py)  ◀── systemd unit / Windows scheduled task
+      │
+      ├─ library.py   uploads + voice library   (data/uploads, data/voices)
+      ├─ jobs.py      one worker thread ──▶ engine.py ──▶ vendor/seed-vc
+      │               data/jobs.json, data/outputs/*.wav   (v1 / v2 wrappers)
+      └─ realtime.py  per-connection RealtimeSession ──▶ engine.rt
+                      (tiny XLSR DiT + HiFT, SOLA splicing)
 ```
 
 ## Components
@@ -72,10 +73,62 @@ ffmpeg discovery (system ffmpeg first, else the binary bundled in the
 `ffmpeg` for pydub and librosa), duration probing, WAV writing and
 atomic JSON persistence.
 
+### `server/realtime.py`
+Port of `real-time-gui.py` from seed-vc without the desktop GUI and
+without sounddevice. `RealtimeModels` loads the tiny model set
+(`seed-uvit-tat-xlsr-tiny`: XLSR content encoder truncated to 12
+layers, 25M-parameter DiT, CAMPPlus, HiFT vocoder) as the `rt` family
+of the engine. `RealtimeSession` holds the sliding window and, per
+block:
+
+1. shifts the model-rate window and the 16 kHz copy fed to the encoder;
+2. optionally mutes the block with an RMS gate (replaces the funasr
+   VAD, which is not installed);
+3. runs the content encoder over the whole window, drops the
+   `extra_time_ce - extra_time` head, length-regulates, prepends the
+   reference prompt and runs the CFM + vocoder;
+4. cuts `return_length` frames (block + crossfade + search) from the
+   tail, minus the right context;
+5. SOLA: finds the best alignment against the previous block's tail
+   within one 20 ms frame, crossfades, stores the new tail;
+6. resamples to the browser's rate if it is not 22.05 kHz.
+
+Block, context and crossfade lengths are rounded to multiples of one
+encoder frame (20 ms, `zc = sr / 50`) exactly as upstream, so the
+16 kHz and mel frame counts stay aligned. Both resamplers keep a
+1024-sample tail between blocks to avoid boundary clicks.
+
+The WebSocket handler in `main.py` accepts a JSON `start` (reference,
+browser sample rate, parameters), replies `ready` with the block size,
+then exchanges raw float32 PCM blocks. Inference runs in a thread via
+`asyncio.to_thread`; a bounded queue drops the oldest block when the
+GPU falls behind and warns the client. Only one session at a time.
+Because browsers cannot set headers on WebSockets, a page protected by
+basic auth first fetches a single-use token.
+
+### `web/rt-worklet.js`
+Two `AudioWorkletProcessor`s: `rt-capture` packs 128-frame render
+quanta into server-sized blocks; `rt-player` is a ring buffer primed
+with two blocks that outputs silence on underrun and reports it. The
+page asks for a 22.05 kHz `AudioContext` so the browser resamples the
+microphone once; if the browser refuses, the server resamples.
+
 ### `server/main.py`
 FastAPI routes (see README for the table), static serving of `web/`,
-and the CLI entry point (`python -m server.main`). `--open` launches
-the browser after startup; the run scripts pass it by default.
+the WebSocket endpoint, and the CLI entry point
+(`python -m server.main`). `--open` launches the browser after startup
+(the run scripts pass it); `--listen` binds all interfaces (the service
+passes it); `--log-file` adds a rotating file handler. `.env` in the
+repository root is loaded by `settings.py` through python-dotenv, so
+the service, the run scripts and the tools all see the same values.
+
+Reverse-proxy support: every URL the server hands to the page is
+relative (`files/...`, `api/...`), so the UI works under any prefix;
+`PLACHATAA_ROOT_PATH` is passed to uvicorn (not FastAPI) so the
+stripped path the proxy forwards is rewritten before routing;
+`proxy_headers` plus `PLACHATAA_FORWARDED_ALLOW_IPS` control which
+`X-Forwarded-*` headers are trusted; a middleware enforces optional
+HTTP basic auth on everything except `/api/health`.
 
 ### `web/`
 No build step: `index.html`, `style.css`, `app.js`. State is a single
@@ -108,8 +161,19 @@ active. Parameters are persisted per model in `localStorage`.
   the installer stops and asks to be re-run.
 - `update.*` re-runs the installer only when something is wrong
   (environment check fails) or when a driver/torch change is
-  requested; otherwise it only pulls, re-pins and upgrades pip
-  packages.
+  requested; otherwise it only pulls, re-pins, upgrades pip packages
+  and restarts the service.
+- `service.sh` writes `/etc/systemd/system/plachataa-web.service`
+  running as the installing user with `--listen --log-file`,
+  `Restart=on-failure` and a long start timeout for model loading, and
+  opens the port in ufw or firewalld. `service.ps1` registers a
+  Scheduled Task triggered at startup running as SYSTEM (no login
+  needed, GPU access works), with restart-on-failure, and adds a
+  Windows Firewall rule. Both are installed by default; `--no-service`
+  / `-NoService` skips them.
+- `uninstall.*` reverses the above: service and firewall rule, `.venv`,
+  `vendor/`, optionally `data/` and the folder itself. On Windows the
+  folder is removed by a detached `cmd` after the script exits.
 
 ## Data layout
 
@@ -142,6 +206,10 @@ vendor/seed-vc/checkpoints/       DiT, CAMPPlus, RMVPE, v2 checkpoints
   inference module and builds the v1 DiT and CAMPPlus from local
   configs. It proves `requirements-seedvc.txt` is complete for the
   pinned revision without downloading weights.
+- `tools/test_realtime.py` runs `RealtimeSession` and the WebSocket
+  endpoint against a stub model (needs torch and `requirements-dev.txt`)
+  and checks block geometry at 22.05/44.1/48 kHz, the noise gate and
+  the start/stream/stop protocol.
 - `tools/check_env.py --torch` validates an installed environment.
 
 There is no automated GPU test; conversions are verified by running the

@@ -4,7 +4,7 @@ Pre-download every checkpoint the web UI can need, so the first
 conversion does not stall for minutes.  Safe to re-run; files already
 in the cache are skipped.
 
-Usage:  python tools/download_models.py [--v1] [--v2]   (default: both)
+Usage:  python tools/download_models.py [--v1] [--v2] [--rt]   (default: all)
 """
 
 import argparse
@@ -36,6 +36,13 @@ V2_CKPTS = [
 	("funasr/campplus", ["campplus_cn_common.bin"]),
 ]
 
+RT_CKPTS = [
+	("Plachta/Seed-VC", ["DiT_uvit_tat_xlsr_ema.pth",
+			     "config_dit_mel_seed_uvit_xlsr_tiny.yml"]),
+	("funasr/campplus", ["campplus_cn_common.bin"]),
+	("FunAudioLLM/CosyVoice-300M", ["hift.pt"]),
+]
+
 # Repos loaded with from_pretrained() (go to HF_HOME).
 V1_HUB = [
 	("openai/whisper-small", None),
@@ -50,6 +57,8 @@ V2_HUB = [
 	("nvidia/bigvgan_v2_22khz_80band_256x",
 	 ["config.json", "bigvgan_generator.pt"]),
 ]
+
+RT_HUB = [("facebook/wav2vec2-xls-r-300m", None)]
 
 # Skip the formats transformers never loads on this stack.
 IGNORE = ["*.h5", "*.msgpack", "*.ot", "*.tflite", "*onnx*", "*.ckpt",
@@ -95,9 +104,11 @@ def main():
 	p = argparse.ArgumentParser()
 	p.add_argument("--v1", action="store_true")
 	p.add_argument("--v2", action="store_true")
+	p.add_argument("--rt", action="store_true",
+		       help="real-time (tiny XLSR) model set")
 	args = p.parse_args()
-	if not args.v1 and not args.v2:
-		args.v1 = args.v2 = True
+	if not (args.v1 or args.v2 or args.rt):
+		args.v1 = args.v2 = args.rt = True
 
 	settings.apply_environment()
 	settings.ensure_dirs()
@@ -118,6 +129,11 @@ def main():
 		fetch_ckpts(V2_CKPTS)
 		print("[v2] hub models")
 		fetch_hub(V2_HUB)
+	if args.rt:
+		print("\n[rt] checkpoints")
+		fetch_ckpts(RT_CKPTS)
+		print("[rt] hub models")
+		fetch_hub(RT_HUB)
 	print("\nAll models present.")
 
 

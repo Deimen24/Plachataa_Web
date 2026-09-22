@@ -124,6 +124,7 @@ function render_status() {
 	}
 	render_model_pill(v1, "v1", st);
 	render_model_pill(v2, "v2", st);
+	render_model_pill($("#pill-rt"), "rt", st);
 	q.textContent = st.queue ? "queue: " + st.queue : "";
 	$("#sysinfo").textContent = JSON.stringify(st, null, 1);
 }
@@ -169,6 +170,7 @@ function set_slot(slot, item) {
 	render_voices();
 	render_recent();
 	update_convert_button();
+	rt_update_button();
 }
 
 function render_slot(slot) {
@@ -392,6 +394,7 @@ function use_voice(v) {
 	render_voices();
 	render_recent();
 	update_convert_button();
+	rt_update_button();
 }
 
 async function save_voice() {
@@ -787,6 +790,314 @@ function setup_settings() {
 	}));
 }
 
+/* ---- real-time voice changer ----------------------------------------- */
+
+const RT_PRESETS = {
+	low: { block_time: 0.18, diffusion_steps: 6, extra_time_right: 0.1,
+	       extra_time_ce: 2.0, extra_time: 0.5 },
+	balanced: { block_time: 0.26, diffusion_steps: 10, extra_time_right: 0.5,
+		    extra_time_ce: 2.5, extra_time: 0.5 },
+	quality: { block_time: 0.5, diffusion_steps: 16, extra_time_right: 1.5,
+		   extra_time_ce: 3.0, extra_time: 1.0 },
+};
+
+const rt = {
+	ws: null,
+	ctx: null,
+	mic: null,
+	capture: null,
+	player: null,
+	running: false,
+	block: 0,
+	sent: 0,
+	received: 0,
+	underruns: 0,
+	stats: {},
+};
+
+function rt_params() {
+	const out = {};
+	for (const input of $$("#rt-params input"))
+		out[input.name] = parseFloat(input.value);
+	return out;
+}
+
+function rt_refresh_outputs() {
+	for (const input of $$("#rt-params input")) {
+		const o = $(`output[data-out="rt_${input.name}"]`);
+		if (o)
+			o.textContent = input.value;
+	}
+}
+
+function rt_apply_preset(name) {
+	for (const [k, v] of Object.entries(RT_PRESETS[name])) {
+		const input = $(`#rt-params input[name="${k}"]`);
+		if (input)
+			input.value = v;
+	}
+	rt_refresh_outputs();
+	rt_persist();
+}
+
+function rt_persist() {
+	localStorage.setItem("rt_params", JSON.stringify(rt_params()));
+}
+
+function rt_restore() {
+	const raw = localStorage.getItem("rt_params");
+	if (!raw)
+		return;
+	try {
+		const vals = JSON.parse(raw);
+		for (const input of $$("#rt-params input"))
+			if (input.name in vals)
+				input.value = vals[input.name];
+	} catch (e) {
+		/* ignore */
+	}
+}
+
+async function rt_list_devices() {
+	if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices)
+		return;
+	let devs = [];
+	try {
+		devs = await navigator.mediaDevices.enumerateDevices();
+	} catch (e) {
+		return;
+	}
+	const mic = $("#rt-mic");
+	const out = $("#rt-out");
+	const keep_mic = mic.value;
+	const keep_out = out.value;
+	mic.innerHTML = "";
+	out.innerHTML = "";
+	out.appendChild(new Option("Default output", ""));
+	let i = 0, o = 0;
+	for (const d of devs) {
+		if (d.kind === "audioinput")
+			mic.appendChild(new Option(d.label || ("Microphone " + (++i)), d.deviceId));
+		if (d.kind === "audiooutput")
+			out.appendChild(new Option(d.label || ("Output " + (++o)), d.deviceId));
+	}
+	mic.value = keep_mic;
+	out.value = keep_out;
+	const can_pick = "setSinkId" in AudioContext.prototype;
+	out.disabled = !can_pick;
+	out.title = can_pick ? "" : "Output device selection needs Chrome/Edge";
+}
+
+function rt_set_stats(html, cls) {
+	const box = $("#rt-stats");
+	box.innerHTML = html;
+	box.className = "rt-stats " + (cls || "");
+}
+
+function rt_render_stats() {
+	const s = rt.stats;
+	const block_ms = s.block_ms || 0;
+	const infer = s.infer_ms || 0;
+	const slow = block_ms && infer > block_ms * 0.9;
+	const parts = [
+		"block " + block_ms + " ms",
+		"<span class='" + (slow ? "bad" : "") + "'>inference " + infer + " ms</span>",
+		"delay ≈ " + (s.algorithm_latency_ms || 0) + " ms + network",
+		"sent " + rt.sent + " / got " + rt.received,
+	];
+	if (rt.underruns)
+		parts.push("<span class='bad'>underruns " + rt.underruns + "</span>");
+	if (s.gated)
+		parts.push("gated " + s.gated);
+	if (slow)
+		parts.push("<span class='bad'>GPU too slow: raise block time or lower steps</span>");
+	rt_set_stats(parts.join(" · "));
+}
+
+function rt_ws_url(token) {
+	const base = new URL("ws/realtime", document.baseURI);
+	base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
+	if (token)
+		base.searchParams.set("token", token);
+	return base.toString();
+}
+
+async function rt_start() {
+	const ref = state.slots.reference;
+	if (!ref) {
+		toast("Pick a reference voice first", true);
+		return;
+	}
+	if (rt.running)
+		return;
+	$("#rt-start").disabled = true;
+	rt_set_stats("requesting microphone…");
+	try {
+		await rt_open_audio();
+	} catch (e) {
+		rt_set_stats("microphone error: " + e.message, "err");
+		$("#rt-start").disabled = false;
+		return;
+	}
+	let token = "";
+	try {
+		token = (await post_json("api/realtime/token", {})).token;
+	} catch (e) {
+		/* no auth configured; token not needed */
+	}
+	const start = { type: "start", sample_rate: rt.ctx.sampleRate,
+			params: rt_params() };
+	if (ref.is_voice)
+		start.voice_id = ref.id;
+	else
+		start.reference_id = ref.id;
+	rt.sent = rt.received = rt.underruns = 0;
+	rt.stats = {};
+	const ws = new WebSocket(rt_ws_url(token));
+	ws.binaryType = "arraybuffer";
+	rt.ws = ws;
+	ws.onopen = () => {
+		rt_set_stats("loading real-time model (first time downloads ~2 GB)…");
+		ws.send(JSON.stringify(start));
+	};
+	ws.onmessage = ev => rt_on_message(ev);
+	ws.onerror = () => rt_set_stats("connection error", "err");
+	ws.onclose = ev => {
+		if (rt.running || rt.ws === ws)
+			rt_stop(ev.code === 1000 ? "" : "connection closed (" + ev.code + ")");
+	};
+}
+
+function rt_on_message(ev) {
+	if (typeof ev.data !== "string") {
+		rt.received++;
+		if (rt.player && $("#rt-monitor").checked)
+			rt.player.port.postMessage(ev.data, [ev.data]);
+		return;
+	}
+	const msg = JSON.parse(ev.data);
+	if (msg.type === "ready") {
+		rt.stats = msg;
+		rt_go_live(msg);
+	} else if (msg.type === "stats") {
+		Object.assign(rt.stats, msg);
+		rt_render_stats();
+	} else if (msg.type === "loading") {
+		rt_set_stats("loading real-time model…");
+	} else if (msg.type === "warning") {
+		toast(msg.message, true);
+	} else if (msg.type === "error") {
+		rt_stop(msg.message);
+	}
+}
+
+async function rt_open_audio() {
+	const mic_id = $("#rt-mic").value;
+	const constraints = { audio: {
+		deviceId: mic_id ? { exact: mic_id } : undefined,
+		echoCancellation: false, noiseSuppression: false,
+		autoGainControl: false, channelCount: 1 } };
+	rt.mic = await navigator.mediaDevices.getUserMedia(constraints);
+	let ctx;
+	try {
+		ctx = new AudioContext({ sampleRate: 22050, latencyHint: "interactive" });
+	} catch (e) {
+		ctx = new AudioContext({ latencyHint: "interactive" });
+	}
+	rt.ctx = ctx;
+	await ctx.audioWorklet.addModule("static/rt-worklet.js");
+	const out_id = $("#rt-out").value;
+	if (out_id && ctx.setSinkId)
+		await ctx.setSinkId(out_id).catch(e => toast("output device: " + e.message, true));
+	await ctx.resume();
+	rt_list_devices();
+}
+
+function rt_go_live(info) {
+	const ctx = rt.ctx;
+	rt.block = info.block_samples;
+	const src = ctx.createMediaStreamSource(rt.mic);
+	rt.capture = new AudioWorkletNode(ctx, "rt-capture", {
+		numberOfInputs: 1, numberOfOutputs: 0,
+		processorOptions: { block: rt.block } });
+	rt.capture.port.onmessage = ev => {
+		if (rt.ws && rt.ws.readyState === WebSocket.OPEN) {
+			rt.ws.send(ev.data);
+			rt.sent++;
+		}
+	};
+	src.connect(rt.capture);
+	rt.player = new AudioWorkletNode(ctx, "rt-player", {
+		numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1],
+		processorOptions: { seconds: 6, prime: rt.block * 2 } });
+	rt.player.port.onmessage = ev => {
+		rt.underruns = ev.data.underruns;
+		rt_render_stats();
+	};
+	rt.player.connect(ctx.destination);
+	rt.running = true;
+	$("#rt-card").classList.add("live");
+	$("#rt-stop").disabled = false;
+	rt_render_stats();
+}
+
+function rt_stop(reason) {
+	const was = rt.running;
+	rt.running = false;
+	if (rt.ws) {
+		const ws = rt.ws;
+		rt.ws = null;
+		try {
+			if (ws.readyState === WebSocket.OPEN)
+				ws.send(JSON.stringify({ type: "stop" }));
+			ws.close();
+		} catch (e) {
+			/* ignore */
+		}
+	}
+	if (rt.capture)
+		rt.capture.disconnect();
+	if (rt.player)
+		rt.player.disconnect();
+	if (rt.mic)
+		rt.mic.getTracks().forEach(t => t.stop());
+	if (rt.ctx)
+		rt.ctx.close().catch(() => {});
+	rt.capture = rt.player = rt.mic = rt.ctx = null;
+	$("#rt-card").classList.remove("live");
+	$("#rt-stop").disabled = true;
+	rt_update_button();
+	if (reason)
+		rt_set_stats(reason, "err");
+	else if (was)
+		rt_set_stats("stopped");
+}
+
+function rt_update_button() {
+	const ok = !!state.slots.reference && !rt.running &&
+		!!(navigator.mediaDevices && window.AudioWorkletNode);
+	$("#rt-start").disabled = !ok;
+}
+
+function setup_realtime() {
+	rt_restore();
+	rt_refresh_outputs();
+	$$("#rt-params input").forEach(i => i.addEventListener("input", () => {
+		rt_refresh_outputs();
+		rt_persist();
+	}));
+	$$("[data-rt-preset]").forEach(b => b.addEventListener("click", () =>
+		rt_apply_preset(b.dataset.rtPreset)));
+	$("#rt-start").addEventListener("click", rt_start);
+	$("#rt-stop").addEventListener("click", () => rt_stop(""));
+	if (!window.isSecureContext)
+		rt_set_stats("Real-time needs HTTPS or localhost (browser blocks the microphone otherwise).", "bad");
+	rt_list_devices();
+	if (navigator.mediaDevices)
+		navigator.mediaDevices.addEventListener("devicechange", rt_list_devices);
+	window.addEventListener("beforeunload", () => rt_stop(""));
+}
+
 /* ---- init ------------------------------------------------------------ */
 
 async function init() {
@@ -794,6 +1105,7 @@ async function init() {
 	setup_inputs();
 	setup_params();
 	setup_settings();
+	setup_realtime();
 	$("#btn-convert").addEventListener("click", convert);
 	$("#btn-save-voice").addEventListener("click", save_voice);
 	$("#btn-clear-jobs").addEventListener("click", clear_jobs);

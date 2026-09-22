@@ -20,6 +20,7 @@
 		<span class="pill" id="pill-device">connecting…</span>
 		<span class="pill" id="pill-v1">v1: not loaded</span>
 		<span class="pill" id="pill-v2">v2: not loaded</span>
+		<span class="pill" id="pill-rt">rt: not loaded</span>
 		<span class="pill" id="pill-queue"></span>
 		<button class="btn small" id="btn-settings">Models</button>
 	</div>
@@ -95,6 +96,75 @@
 				<ul class="list" id="voice-list"></ul>
 				<p class="muted" id="voice-empty">No saved voices yet. Pick a reference and click “save to library”.</p>
 			</div>
+		</div>
+		<div class="card" id="rt-card">
+			<div class="card-head">
+				<h2>Real-time voice changer</h2>
+				<span class="hint">Live microphone → reference voice</span>
+			</div>
+			<p class="muted">Uses the reference picked above and the small real-time model (~0.5 s delay on an RTX card). Wear headphones. To use it in games or calls, choose a virtual audio cable as output.</p>
+			<div class="row presets">
+				<label class="field"><span>Microphone</span>
+					<select class="select" id="rt-mic"></select></label>
+				<label class="field"><span>Output</span>
+					<select class="select" id="rt-out"></select></label>
+			</div>
+			<div class="row presets">
+				<span class="muted">Latency preset:</span>
+				<button class="btn small" data-rt-preset="low">Low latency</button>
+				<button class="btn small" data-rt-preset="balanced">Balanced</button>
+				<button class="btn small" data-rt-preset="quality">Quality</button>
+			</div>
+			<details class="recent" id="rt-advanced">
+				<summary>Advanced settings</summary>
+				<div id="rt-params">
+					<label class="field range">
+						<span>Block time (s) <output data-out="rt_block_time"></output></span>
+						<input type="range" name="block_time" min="0.1" max="1.0" step="0.02" value="0.26">
+						<small>Audio per step. Shorter = less delay but needs a faster GPU.</small>
+					</label>
+					<label class="field range">
+						<span>Diffusion steps <output data-out="rt_diffusion_steps"></output></span>
+						<input type="range" name="diffusion_steps" min="1" max="30" step="1" value="10">
+					</label>
+					<label class="field range">
+						<span>Right context (s) <output data-out="rt_extra_time_right"></output></span>
+						<input type="range" name="extra_time_right" min="0.02" max="3" step="0.02" value="0.5">
+						<small>Look-ahead. More = better quality, adds delay 1:1.</small>
+					</label>
+					<label class="field range">
+						<span>Left context, encoder (s) <output data-out="rt_extra_time_ce"></output></span>
+						<input type="range" name="extra_time_ce" min="0.5" max="5" step="0.1" value="2.5">
+					</label>
+					<label class="field range">
+						<span>Left context, DiT (s) <output data-out="rt_extra_time"></output></span>
+						<input type="range" name="extra_time" min="0.1" max="3" step="0.1" value="0.5">
+					</label>
+					<label class="field range">
+						<span>Crossfade (s) <output data-out="rt_crossfade_time"></output></span>
+						<input type="range" name="crossfade_time" min="0.02" max="0.2" step="0.01" value="0.05">
+					</label>
+					<label class="field range">
+						<span>CFG rate <output data-out="rt_inference_cfg_rate"></output></span>
+						<input type="range" name="inference_cfg_rate" min="0" max="1" step="0.1" value="0.7">
+					</label>
+					<label class="field range">
+						<span>Reference prompt length (s) <output data-out="rt_max_prompt_length"></output></span>
+						<input type="range" name="max_prompt_length" min="1" max="10" step="0.5" value="3">
+					</label>
+					<label class="field range">
+						<span>Noise gate (dB) <output data-out="rt_threshold_db"></output></span>
+						<input type="range" name="threshold_db" min="-60" max="-10" step="1" value="-60">
+						<small>-60 = off. Blocks quieter than this are muted.</small>
+					</label>
+				</div>
+			</details>
+			<div class="row">
+				<button class="btn primary" id="rt-start" disabled>▶ Start</button>
+				<button class="btn" id="rt-stop" disabled>■ Stop</button>
+				<label class="field check"><input type="checkbox" id="rt-monitor" checked><span>Play converted voice here</span></label>
+			</div>
+			<div class="rt-stats" id="rt-stats"></div>
 		</div>
 	</section>
 
@@ -201,6 +271,8 @@
 		<button class="btn" data-unload="v1">Unload v1</button>
 		<button class="btn" data-load="v2">Load v2</button>
 		<button class="btn" data-unload="v2">Unload v2</button>
+		<button class="btn" data-load="rt">Load real-time</button>
+		<button class="btn" data-unload="rt">Unload real-time</button>
 	</div>
 	<p class="muted">Models load automatically on first use; the first load also downloads several GB from HuggingFace. Unload to free VRAM for games.</p>
 	<div class="row right">

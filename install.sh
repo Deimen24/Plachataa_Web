@@ -74,6 +74,39 @@ find_python() {
 	return 1
 }
 
+refuse_root() {
+	# The script calls sudo itself where needed.  Running it entirely as
+	# root makes .venv and data/ root-owned, and the service (which runs
+	# as the normal user) could not write to them.
+	if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+		die "run ./install.sh as your normal user, not with sudo (it asks for sudo when needed)"
+	fi
+}
+
+# Python 3.10/3.11 is not packaged on rolling distros (Arch/CachyOS ship
+# 3.13+).  uv can fetch a self-contained 3.11 build for any distro.
+ensure_uv() {
+	if command -v uv >/dev/null; then
+		return 0
+	fi
+	log "Installing uv to fetch Python 3.11"
+	case "$(pkg_manager)" in
+	pacman) sudo pacman -S --needed --noconfirm uv ;;
+	*)
+		curl -LsSf https://astral.sh/uv/install.sh | sh
+		export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+		;;
+	esac
+	command -v uv >/dev/null || die "uv installation failed; install python 3.11 manually"
+}
+
+python_via_uv() {
+	ensure_uv
+	log "Fetching Python 3.11 with uv (managed, does not touch the system python)"
+	uv python install 3.11 >&2
+	uv python find 3.11
+}
+
 pkg_manager() {
 	if command -v apt-get >/dev/null; then echo apt
 	elif command -v dnf >/dev/null; then echo dnf
@@ -122,7 +155,7 @@ install_system_deps() {
 			sudo dnf install -y git ffmpeg libsndfile python3.11
 		;;
 	pacman)
-		sudo pacman -S --needed --noconfirm git ffmpeg libsndfile python
+		sudo pacman -S --needed --noconfirm git ffmpeg libsndfile uv
 		;;
 	*)
 		warn "unknown package manager; make sure git, ffmpeg and python 3.10/3.11 are installed"
@@ -267,10 +300,14 @@ install_service() {
 
 main() {
 	parse_args "$@"
+	refuse_root
 	command -v sudo >/dev/null || warn "sudo not found; system package steps may fail"
 	install_system_deps
 	local py
-	py="$(find_python)" || die "python 3.10 or 3.11 not found"
+	if ! py="$(find_python)"; then
+		warn "python 3.10/3.11 not found on the system (found: $(python3 --version 2>/dev/null || echo none))"
+		py="$(python_via_uv)"
+	fi
 	log "Using $py ($("$py" --version))"
 	vendor_seedvc
 	decide_device "$py"

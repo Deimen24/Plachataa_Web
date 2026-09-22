@@ -83,9 +83,16 @@ cd Plachataa_Web
                              #     --proxy-ip IP, --no-service, --cpu, --yes
 ```
 
+Run it as your normal user; it asks for `sudo` where needed (running
+the whole script with `sudo` is refused, the service must own its
+files).
+
 On Debian/Ubuntu the script installs `python3.10`, `git`, `ffmpeg` and
 `libsndfile1` with `apt` (adding the deadsnakes PPA when needed). On
-Fedora it uses `dnf`, on Arch `pacman`. Driver updates use
+Fedora it uses `dnf`, on Arch/CachyOS `pacman`. Distros that only ship
+a newer Python (Arch, CachyOS, Fedora 41+) get a self-contained Python
+3.11 through [`uv`](https://docs.astral.sh/uv/), installed into your
+home directory without touching the system Python. Driver updates use
 `ubuntu-drivers`, `akmod-nvidia` or the `nvidia` package respectively
 and require a reboot afterwards.
 

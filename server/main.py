@@ -7,6 +7,7 @@ Run with:  python -m server.main [--listen] [--port 7870]
 import argparse
 import logging
 import os
+import time
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -342,7 +343,22 @@ def parse_args():
 			    "start, e.g. v1 or v1,v2")
 	p.add_argument("--reload", action="store_true",
 		       help="developer auto-reload")
+	p.add_argument("--open", action="store_true",
+		       help="open the UI in the default browser once up")
 	return p.parse_args()
+
+
+def open_browser_later(url, delay=2.5):
+	import threading
+	import webbrowser
+
+	def go():
+		time.sleep(delay)
+		try:
+			webbrowser.open(url)
+		except Exception:
+			pass
+	threading.Thread(target=go, daemon=True).start()
 
 
 def main():
@@ -355,8 +371,11 @@ def main():
 		engine.load_in_background(f.strip())
 	log.info("seed-vc dir: %s (present=%s)", settings.SEEDVC_DIR,
 		 settings.seedvc_present())
-	log.info("open http://%s:%d/ in your browser",
-		 "localhost" if host == "0.0.0.0" else host, args.port)
+	url = "http://%s:%d/" % ("localhost" if host == "0.0.0.0" else host,
+				 args.port)
+	log.info("open %s in your browser", url)
+	if args.open:
+		open_browser_later(url)
 	target = "server.main:app" if args.reload else app
 	uvicorn.run(target, host=host, port=args.port, reload=args.reload,
 		    log_level="info")

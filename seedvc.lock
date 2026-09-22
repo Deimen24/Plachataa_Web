@@ -1,0 +1,5 @@
+# Pinned upstream seed-vc revision.  Both installers and update scripts
+# read this file (KEY=VALUE, no spaces).  Bump SEEDVC_COMMIT deliberately
+# after testing a newer upstream against server/engine.py.
+SEEDVC_REPO=https://github.com/Plachtaa/seed-vc.git
+SEEDVC_COMMIT=51383efd921027683c89e5348211d93ff12ac2a8

@@ -74,9 +74,21 @@ pkg_manager() {
 	fi
 }
 
+system_deps_present() {
+	local py
+	command -v git >/dev/null || return 1
+	command -v ffmpeg >/dev/null || return 1
+	py="$(find_python)" || return 1
+	"$py" -m venv --help >/dev/null 2>&1
+}
+
 install_system_deps() {
 	local pm; pm="$(pkg_manager)"
-	log "Checking system packages (git, python3.10 + venv, ffmpeg)"
+	if system_deps_present; then
+		log "System packages present (git, python, ffmpeg)"
+		return
+	fi
+	log "Installing system packages (git, python3.10 + venv, ffmpeg)"
 	case "$pm" in
 	apt)
 		local pkgs="git ffmpeg libsndfile1"

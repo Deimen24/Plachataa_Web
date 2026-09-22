@@ -126,8 +126,9 @@ class Engine:
 	def status(self):
 		try:
 			torch = self.torch()
-		except EngineError as exc:
-			return {"ok": False, "error": str(exc)}
+		except Exception as exc:
+			return {"ok": False, "error": "%s: %s" % (
+				type(exc).__name__, exc)}
 		dev = self.device()
 		info = {
 			"ok": True,

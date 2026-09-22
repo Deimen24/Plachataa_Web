@@ -61,6 +61,7 @@ def apply_environment():
 
 
 def ensure_dirs():
+	apply_environment()
 	for d in (UPLOAD_DIR, OUTPUT_DIR, VOICE_DIR, Path(os.environ["HF_HOME"])):
 		d.mkdir(parents=True, exist_ok=True)
 

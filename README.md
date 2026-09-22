@@ -170,8 +170,9 @@ too. Python, Git, ffmpeg and the NVIDIA driver are left untouched.
 
 The service binds `0.0.0.0:7870`. Point your proxy at
 `http://<gaming-pc-ip>:7870/`; ready-made configs are in
-[`docs/reverse-proxy/`](docs/reverse-proxy/) for **nginx** and
-**Caddy**, for both a dedicated hostname and a sub-path.
+[`docs/reverse-proxy/`](docs/reverse-proxy/) for **nginx**, **Caddy**
+and **Nginx Proxy Manager** (turn on *Websockets Support* on the proxy
+host, see [the NPM guide](docs/reverse-proxy/nginx-proxy-manager.md)).
 
 What the proxy needs:
 
@@ -287,6 +288,10 @@ The UI talks to a small JSON API (interactive docs at `/api/docs`):
 - **HuggingFace unreachable**: set `HF_ENDPOINT=https://hf-mirror.com`
   in `.env`.
 - **Port in use**: set `PLACHATAA_PORT` in `.env` and restart the service.
+- **Real-time stops with close code 1006 right after Start**: the
+  reverse proxy is not forwarding WebSockets. In Nginx Proxy Manager
+  enable *Websockets Support* on the proxy host; in plain nginx add the
+  `Upgrade`/`Connection` headers from `docs/reverse-proxy/nginx.conf`.
 - **Real-time "GPU too slow"**: lower diffusion steps or raise block
   time; the tiny model runs a 0.26 s block in well under 100 ms on an
   RTX 3060.

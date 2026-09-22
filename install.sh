@@ -64,6 +64,14 @@ parse_args() {
 
 find_python() {
 	local cand
+	export PATH="$HOME/.local/bin:$PATH"
+	if command -v uv >/dev/null; then
+		cand="$(uv python find 3.11 2>/dev/null || true)"
+		if [ -n "$cand" ] && [ -x "$cand" ]; then
+			echo "$cand"
+			return 0
+		fi
+	fi
 	for cand in python3.10 python3.11 python3; do
 		if command -v "$cand" >/dev/null 2>&1 &&
 		   "$cand" -c 'import sys; sys.exit(0 if (3,10) <= sys.version_info[:2] <= (3,11) else 1)' 2>/dev/null; then
@@ -90,14 +98,16 @@ ensure_uv() {
 		return 0
 	fi
 	log "Installing uv to fetch Python 3.11"
-	case "$(pkg_manager)" in
-	pacman) sudo pacman -S --needed --noconfirm uv ;;
-	*)
-		curl -LsSf https://astral.sh/uv/install.sh | sh
-		export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-		;;
-	esac
-	command -v uv >/dev/null || die "uv installation failed; install python 3.11 manually"
+	if [ "$(pkg_manager)" = pacman ]; then
+		sudo pacman -S --needed --noconfirm uv || \
+			warn "pacman could not install uv (mirror or keyring problem); using uv's own installer"
+	fi
+	if ! command -v uv >/dev/null; then
+		curl -LsSf https://astral.sh/uv/install.sh | \
+			env UV_INSTALL_DIR="$HOME/.local/bin" sh
+		export PATH="$HOME/.local/bin:$PATH"
+	fi
+	command -v uv >/dev/null || die "uv installation failed; install uv or python 3.11 manually and re-run"
 }
 
 python_via_uv() {

@@ -38,7 +38,7 @@ function Test-Admin {
 function Ensure-Admin {
 	if (Test-Admin) { return }
 	Log "Requesting administrator rights"
-	$argv = "-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.ScriptName)`" $Command"
+	$argv = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" $Command"
 	$p = Start-Process powershell -Verb RunAs -ArgumentList $argv -Wait -PassThru
 	exit $p.ExitCode
 }

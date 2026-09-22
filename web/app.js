@@ -1017,9 +1017,14 @@ function rt_go_live(info) {
 	const ctx = rt.ctx;
 	rt.block = info.block_samples;
 	const src = ctx.createMediaStreamSource(rt.mic);
+	// The capture node has a (silent) output wired to the destination:
+	// browsers only pull nodes that reach the destination.
 	rt.capture = new AudioWorkletNode(ctx, "rt-capture", {
-		numberOfInputs: 1, numberOfOutputs: 0,
+		numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1],
 		processorOptions: { block: rt.block } });
+	const mute = ctx.createGain();
+	mute.gain.value = 0;
+	rt.capture.connect(mute).connect(ctx.destination);
 	rt.capture.port.onmessage = ev => {
 		if (rt.ws && rt.ws.readyState === WebSocket.OPEN) {
 			rt.ws.send(ev.data);

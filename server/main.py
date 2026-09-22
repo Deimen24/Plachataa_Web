@@ -472,17 +472,28 @@ async def _rt_start(ws, cmd):
 async def _rt_worker(ws, session, queue):
 	import numpy as np
 	n = 0
-	while True:
-		data = await queue.get()
-		pcm = np.frombuffer(data, dtype=np.float32).copy()
-		if pcm.size != session.client_block:
-			continue
-		out = await asyncio.to_thread(session.process, pcm)
-		await ws.send_bytes(out.astype(np.float32).tobytes())
-		n += 1
-		if n % 8 == 0:
-			await _rt_send(ws, {"type": "stats", **session.stats,
-					    "queued": queue.qsize()})
+	try:
+		while True:
+			data = await queue.get()
+			pcm = np.frombuffer(data, dtype=np.float32).copy()
+			if pcm.size != session.client_block:
+				continue
+			out = await asyncio.to_thread(session.process, pcm)
+			await ws.send_bytes(out.astype(np.float32).tobytes())
+			n += 1
+			if n % 8 == 0:
+				await _rt_send(ws, {"type": "stats", **session.stats,
+						    "queued": queue.qsize()})
+	except asyncio.CancelledError:
+		raise
+	except Exception as exc:
+		log.exception("real-time inference failed")
+		try:
+			await _rt_send(ws, {"type": "error",
+					    "message": "%s: %s" % (type(exc).__name__, exc)})
+			await ws.close(code=1011)
+		except Exception:
+			pass
 
 
 # ---- files & UI --------------------------------------------------------

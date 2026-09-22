@@ -15,7 +15,9 @@ class RtCapture extends AudioWorkletProcessor {
 		this.fill = 0;
 	}
 
-	process(inputs) {
+	process(inputs, outputs) {
+		if (outputs[0] && outputs[0][0])
+			outputs[0][0].fill(0);
 		const ch = inputs[0] && inputs[0][0];
 		if (!ch)
 			return true;

@@ -136,7 +136,13 @@ vendor/seed-vc/checkpoints/       DiT, CAMPPlus, RMVPE, v2 checkpoints
 
 ## Testing
 
-`tools/test_jobs.py` exercises the job queue with a stubbed engine (no
-models needed). `tools/check_env.py --torch` validates an installed
-environment. There is no automated GPU test; conversions are verified
-by running the UI.
+- `tools/test_jobs.py` exercises the job queue with a stubbed engine
+  (no models, no torch needed).
+- `tools/smoke_engine.py` bootstraps the vendored seed-vc, imports every
+  inference module and builds the v1 DiT and CAMPPlus from local
+  configs. It proves `requirements-seedvc.txt` is complete for the
+  pinned revision without downloading weights.
+- `tools/check_env.py --torch` validates an installed environment.
+
+There is no automated GPU test; conversions are verified by running the
+UI.

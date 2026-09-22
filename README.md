@@ -112,8 +112,9 @@ old for CUDA 12.1.
 To check your machine at any time:
 
 ```
-.venv/bin/python tools/check_env.py --torch        # Linux
+.venv/bin/python tools/check_env.py --torch        # Linux: GPU, driver, torch
 .venv\Scripts\python tools\check_env.py --torch    # Windows
+.venv/bin/python tools/smoke_engine.py             # imports seed-vc, builds a model, no download
 ```
 
 ## Using the web UI

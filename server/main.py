@@ -392,6 +392,8 @@ async def ws_realtime(ws: WebSocket):
 		await ws.close(code=4401)
 		return
 	await ws.accept()
+	log.info("real-time websocket accepted from %s",
+		 ws.client.host if ws.client else "?")
 	if rt_active:
 		await _rt_send(ws, {"type": "error",
 				    "message": "another real-time session is active"})
@@ -436,6 +438,7 @@ async def ws_realtime(ws: WebSocket):
 			pass
 	finally:
 		rt_active = False
+		log.info("real-time websocket closed")
 		if worker is not None:
 			worker.cancel()
 		engine._free_memory()
@@ -445,6 +448,17 @@ async def ws_realtime(ws: WebSocket):
 			pass
 
 
+async def _rt_heartbeat(ws, started):
+	"""
+	Keep the socket busy while the model loads (minutes on first run),
+	otherwise reverse proxies with an idle timeout drop it.
+	"""
+	while True:
+		await asyncio.sleep(5)
+		await _rt_send(ws, {"type": "loading",
+				    "elapsed": int(time.time() - started)})
+
+
 async def _rt_start(ws, cmd):
 	from .realtime import RealtimeSession
 	try:
@@ -452,7 +466,8 @@ async def _rt_start(ws, cmd):
 	except HTTPException as exc:
 		await _rt_send(ws, {"type": "error", "message": exc.detail})
 		return None
-	await _rt_send(ws, {"type": "loading"})
+	await _rt_send(ws, {"type": "loading", "elapsed": 0})
+	beat = asyncio.create_task(_rt_heartbeat(ws, time.time()))
 	try:
 		await asyncio.to_thread(engine.load, "rt")
 		session = await asyncio.to_thread(
@@ -463,9 +478,12 @@ async def _rt_start(ws, cmd):
 		await _rt_send(ws, {"type": "error",
 				    "message": "%s: %s" % (type(exc).__name__, exc)})
 		return None
+	finally:
+		beat.cancel()
 	info = session.info()
 	info["type"] = "ready"
 	await _rt_send(ws, info)
+	log.info("real-time session ready: %s", info)
 	return session
 
 

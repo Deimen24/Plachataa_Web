@@ -964,8 +964,26 @@ async function rt_start() {
 	ws.onerror = () => rt_set_stats("connection error", "err");
 	ws.onclose = ev => {
 		if (rt.running || rt.ws === ws)
-			rt_stop(ev.code === 1000 ? "" : "connection closed (" + ev.code + ")");
+			rt_stop(ev.code === 1000 ? "" : rt_close_reason(ev, rt.running));
 	};
+}
+
+function rt_close_reason(ev, was_live) {
+	const code = ev.code;
+	if (code === 1006 && !was_live)
+		return "connection closed (1006) before the server answered: the " +
+			"reverse proxy is not forwarding WebSocket upgrades to " +
+			"ws/realtime, or a proxy timeout cut the connection. See " +
+			"docs/reverse-proxy/. Server log: service.sh logs";
+	if (code === 1006)
+		return "connection dropped (1006): server stopped or proxy timeout";
+	if (code === 4401)
+		return "not authorised (login again and retry)";
+	if (code === 4409)
+		return "another real-time session is already running";
+	if (code === 1011)
+		return "server error during conversion (see server log)";
+	return "connection closed (" + code + (ev.reason ? " " + ev.reason : "") + ")";
 }
 
 function rt_on_message(ev) {
@@ -983,7 +1001,8 @@ function rt_on_message(ev) {
 		Object.assign(rt.stats, msg);
 		rt_render_stats();
 	} else if (msg.type === "loading") {
-		rt_set_stats("loading real-time model…");
+		rt_set_stats("loading real-time model… " + (msg.elapsed || 0) +
+			" s (first time downloads ~2 GB)");
 	} else if (msg.type === "warning") {
 		toast(msg.message, true);
 	} else if (msg.type === "error") {

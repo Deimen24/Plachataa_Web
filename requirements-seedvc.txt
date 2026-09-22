@@ -1,0 +1,25 @@
+# Runtime dependencies of the seed-vc inference path (seed_vc_wrapper.py and
+# modules/v2/vc_wrapper.py). Pinned to the versions upstream tested with.
+#
+# torch / torchaudio / torchvision are NOT listed here: the installer picks
+# the right wheel index (CUDA or CPU) for the machine and installs them first.
+#
+# Deliberately left out of upstream requirements.txt (not needed to convert):
+#   gradio, FreeSimpleGUI, sounddevice, funasr, modelscope, resemblyzer,
+#   jiwer, accelerate
+scipy==1.13.1
+librosa==0.10.2
+huggingface-hub>=0.28.1
+munch==4.0.0
+einops==0.8.0
+descript-audio-codec==1.0.0
+pydub==0.25.1
+transformers==4.46.3
+soundfile==0.12.1
+numpy==1.26.4
+hydra-core==1.3.2
+omegaconf>=2.3.0
+matplotlib
+tqdm
+pyyaml
+python-dotenv

@@ -1,0 +1,5 @@
+# Dependencies of the Plachataa Web server itself.
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+python-multipart>=0.0.9
+imageio-ffmpeg>=0.5.1

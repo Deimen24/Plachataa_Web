@@ -10,7 +10,8 @@ import uuid
 from pathlib import Path
 
 from . import settings
-from .audio import probe_duration, dump_json, load_json
+from .audio import probe_duration, dump_json, load_json, transcode_to_wav, \
+	NATIVE_EXT
 
 
 class Library:
@@ -56,11 +57,18 @@ class Library:
 
 	def add_bytes(self, name, ext, data):
 		item_id = uuid.uuid4().hex
-		fname = item_id + ext.lower()
-		dest = self.dir / fname
-		with open(dest, "wb") as fh:
+		ext = ext.lower()
+		raw = self.dir / (item_id + ext)
+		with open(raw, "wb") as fh:
 			fh.write(data)
-		return self._register(item_id, name, fname)
+		if ext in NATIVE_EXT:
+			return self._register(item_id, name, raw.name)
+		wav = self.dir / (item_id + ".wav")
+		try:
+			transcode_to_wav(raw, wav)
+		finally:
+			raw.unlink(missing_ok=True)
+		return self._register(item_id, name, wav.name)
 
 	def add_copy(self, name, src_path):
 		src_path = Path(src_path)

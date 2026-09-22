@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import settings
-from .audio import ffmpeg_path, probe_duration
+from .audio import ffmpeg_path, probe_duration, ensure_ffmpeg_on_path
 from .engine import engine, MODELS, MODEL_INFO, EngineError
 from .jobs import JobStore
 from .library import make_libraries
@@ -24,6 +24,7 @@ log = logging.getLogger("plachataa")
 
 settings.apply_environment()
 settings.ensure_dirs()
+ensure_ffmpeg_on_path()
 
 app = FastAPI(title="Plachataa Web", docs_url="/api/docs",
 	      redoc_url=None)

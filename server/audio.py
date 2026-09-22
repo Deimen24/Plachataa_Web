@@ -2,9 +2,11 @@
 Small audio helpers that do not need the models loaded.
 """
 
+import os
 import shutil
 import subprocess
 import json
+from pathlib import Path
 
 import numpy as np
 import soundfile as sf
@@ -23,6 +25,50 @@ def ffmpeg_path():
 		return imageio_ffmpeg.get_ffmpeg_exe()
 	except Exception:
 		return None
+
+
+def ensure_ffmpeg_on_path():
+	"""
+	librosa (via audioread) and pydub look for `ffmpeg` on PATH.  If only
+	the imageio-ffmpeg binary exists, expose it under that name.
+	"""
+	if shutil.which("ffmpeg"):
+		return True
+	exe = ffmpeg_path()
+	if exe is None:
+		return False
+	link_dir = Path(exe).parent / "plachataa-bin"
+	link_dir.mkdir(exist_ok=True)
+	suffix = ".exe" if os.name == "nt" else ""
+	alias = link_dir / ("ffmpeg" + suffix)
+	if not alias.exists():
+		try:
+			os.symlink(exe, alias)
+		except OSError:
+			shutil.copyfile(exe, alias)
+			alias.chmod(0o755)
+	os.environ["PATH"] = str(link_dir) + os.pathsep + os.environ["PATH"]
+	return True
+
+
+# Formats soundfile/libsndfile decode natively; everything else is
+# transcoded to wav on upload so the models never depend on ffmpeg.
+NATIVE_EXT = {".wav", ".flac", ".ogg", ".aiff", ".aif"}
+
+
+def transcode_to_wav(src, dst, sr=None):
+	exe = ffmpeg_path()
+	if exe is None:
+		raise RuntimeError("ffmpeg not available to decode %s" %
+				   Path(src).suffix)
+	cmd = [exe, "-hide_banner", "-loglevel", "error", "-y", "-i",
+	       str(src), "-vn", "-ac", "1", "-acodec", "pcm_s16le"]
+	if sr:
+		cmd += ["-ar", str(sr)]
+	cmd.append(str(dst))
+	res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+	if res.returncode != 0:
+		raise RuntimeError("ffmpeg failed: " + res.stderr.strip()[-400:])
 
 
 def ffprobe_duration(path):

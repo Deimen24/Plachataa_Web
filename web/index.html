@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plachataa Web</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+	<div class="brand">
+		<span class="logo">🎙</span>
+		<div>
+			<h1>Plachataa Web</h1>
+			<p class="sub">Zero-shot voice conversion powered by Seed-VC</p>
+		</div>
+	</div>
+	<div class="status" id="status">
+		<span class="pill" id="pill-device">connecting…</span>
+		<span class="pill" id="pill-v1">v1: not loaded</span>
+		<span class="pill" id="pill-v2">v2: not loaded</span>
+		<span class="pill" id="pill-queue"></span>
+		<button class="btn small" id="btn-settings">Models</button>
+	</div>
+</header>
+
+<main class="layout">
+	<section class="col">
+		<div class="card" id="source-card">
+			<div class="card-head">
+				<h2>1. Source audio</h2>
+				<span class="hint">The voice you want to change</span>
+			</div>
+			<div class="drop" data-slot="source">
+				<p>Drop an audio file here, or</p>
+				<div class="row">
+					<label class="btn">Choose file
+						<input type="file" accept="audio/*" hidden data-slot="source">
+					</label>
+					<button class="btn" data-record="source">● Record</button>
+					<select class="select" data-examples="source">
+						<option value="">Examples…</option>
+					</select>
+				</div>
+			</div>
+			<div class="picked" data-picked="source" hidden>
+				<div class="picked-row">
+					<strong class="picked-name"></strong>
+					<span class="picked-dur"></span>
+					<button class="link" data-clear="source">clear</button>
+				</div>
+				<audio controls class="picked-audio"></audio>
+			</div>
+			<details class="recent">
+				<summary>Recent uploads</summary>
+				<ul class="list" data-recent="source"></ul>
+			</details>
+		</div>
+
+		<div class="card" id="reference-card">
+			<div class="card-head">
+				<h2>2. Reference voice</h2>
+				<span class="hint">Who it should sound like (25 s max used)</span>
+			</div>
+			<div class="drop" data-slot="reference">
+				<p>Drop an audio file here, or</p>
+				<div class="row">
+					<label class="btn">Choose file
+						<input type="file" accept="audio/*" hidden data-slot="reference">
+					</label>
+					<button class="btn" data-record="reference">● Record</button>
+					<select class="select" data-examples="reference">
+						<option value="">Examples…</option>
+					</select>
+				</div>
+			</div>
+			<div class="picked" data-picked="reference" hidden>
+				<div class="picked-row">
+					<strong class="picked-name"></strong>
+					<span class="picked-dur"></span>
+					<button class="link" data-clear="reference">clear</button>
+					<button class="link" id="btn-save-voice">save to library</button>
+				</div>
+				<audio controls class="picked-audio"></audio>
+			</div>
+			<details class="recent">
+				<summary>Recent uploads</summary>
+				<ul class="list" data-recent="reference"></ul>
+			</details>
+			<div class="voices">
+				<div class="card-head">
+					<h3>Voice library</h3>
+				</div>
+				<ul class="list" id="voice-list"></ul>
+				<p class="muted" id="voice-empty">No saved voices yet. Pick a reference and click “save to library”.</p>
+			</div>
+		</div>
+	</section>
+
+	<section class="col">
+		<div class="card">
+			<div class="card-head">
+				<h2>3. Model &amp; settings</h2>
+			</div>
+			<label class="field">
+				<span>Model</span>
+				<select id="model" class="select wide"></select>
+			</label>
+			<p class="muted" id="model-hint"></p>
+
+			<div class="row presets">
+				<span class="muted">Presets:</span>
+				<button class="btn small" data-preset="fast">Fast</button>
+				<button class="btn small" data-preset="default">Default</button>
+				<button class="btn small" data-preset="quality">Quality</button>
+			</div>
+
+			<div id="params-common">
+				<label class="field range">
+					<span>Diffusion steps <output data-out="diffusion_steps"></output></span>
+					<input type="range" name="diffusion_steps" min="1" max="200" step="1" value="10">
+					<small>Higher = better quality, slower. 10 is fine for speech, 30-50 for singing.</small>
+				</label>
+				<label class="field range">
+					<span>Length adjust <output data-out="length_adjust"></output></span>
+					<input type="range" name="length_adjust" min="0.5" max="2" step="0.1" value="1">
+					<small>&lt;1 faster speech, &gt;1 slower speech.</small>
+				</label>
+			</div>
+
+			<div id="params-v1" class="param-group">
+				<label class="field range">
+					<span>CFG rate <output data-out="cfg_rate"></output></span>
+					<input type="range" name="cfg_rate" min="0" max="1" step="0.1" value="0.7">
+				</label>
+			</div>
+
+			<div id="params-v1_f0" class="param-group">
+				<label class="field check">
+					<input type="checkbox" name="auto_f0_adjust" checked>
+					<span>Auto pitch adjust (shift source pitch to the reference’s range)</span>
+				</label>
+				<label class="field range">
+					<span>Pitch shift (semitones) <output data-out="pitch_shift"></output></span>
+					<input type="range" name="pitch_shift" min="-24" max="24" step="1" value="0">
+				</label>
+			</div>
+
+			<div id="params-v2" class="param-group">
+				<label class="field range">
+					<span>Intelligibility CFG <output data-out="intelligibility_cfg_rate"></output></span>
+					<input type="range" name="intelligibility_cfg_rate" min="0" max="1" step="0.1" value="0">
+				</label>
+				<label class="field range">
+					<span>Similarity CFG <output data-out="similarity_cfg_rate"></output></span>
+					<input type="range" name="similarity_cfg_rate" min="0" max="1" step="0.1" value="0.7">
+				</label>
+				<label class="field range">
+					<span>Top-p <output data-out="top_p"></output></span>
+					<input type="range" name="top_p" min="0.1" max="1" step="0.1" value="0.9">
+				</label>
+				<label class="field range">
+					<span>Temperature <output data-out="temperature"></output></span>
+					<input type="range" name="temperature" min="0.1" max="2" step="0.1" value="1">
+				</label>
+				<label class="field range">
+					<span>Repetition penalty <output data-out="repetition_penalty"></output></span>
+					<input type="range" name="repetition_penalty" min="1" max="3" step="0.1" value="1">
+				</label>
+				<label class="field check">
+					<input type="checkbox" name="convert_style">
+					<span>Convert style / emotion / accent too</span>
+				</label>
+				<label class="field check">
+					<input type="checkbox" name="anonymization_only">
+					<span>Anonymise only (ignore reference, use an average voice)</span>
+				</label>
+			</div>
+
+			<button class="btn primary big" id="btn-convert" disabled>Convert</button>
+			<p class="muted" id="convert-note"></p>
+		</div>
+
+		<div class="card">
+			<div class="card-head">
+				<h2>4. Results</h2>
+				<button class="link" id="btn-clear-jobs">clear finished</button>
+			</div>
+			<ul class="jobs" id="jobs"></ul>
+			<p class="muted" id="jobs-empty">Nothing converted yet.</p>
+		</div>
+	</section>
+</main>
+
+<dialog id="settings">
+	<h2>Models &amp; system</h2>
+	<pre id="sysinfo">…</pre>
+	<div class="row">
+		<button class="btn" data-load="v1">Load v1</button>
+		<button class="btn" data-unload="v1">Unload v1</button>
+		<button class="btn" data-load="v2">Load v2</button>
+		<button class="btn" data-unload="v2">Unload v2</button>
+	</div>
+	<p class="muted">Models load automatically on first use; the first load also downloads several GB from HuggingFace. Unload to free VRAM for games.</p>
+	<div class="row right">
+		<button class="btn" id="btn-settings-close">Close</button>
+	</div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

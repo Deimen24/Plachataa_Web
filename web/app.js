@@ -801,6 +801,8 @@ const RT_PRESETS = {
 		   extra_time_ce: 3.0, extra_time: 1.0 },
 };
 
+const PTT_RELEASE_MS = 250;
+
 const rt = {
 	ws: null,
 	ctx: null,
@@ -813,13 +815,77 @@ const rt = {
 	received: 0,
 	underruns: 0,
 	stats: {},
+	ptt_key: "ControlRight",
+	ptt_binding: false,
+	ptt_down: false,
+	ptt_timer: null,
+	talk: true,
 };
+
+const rt_prefs_keys = ["rt-model", "rt-fp16", "rt-gain", "rt-ns", "rt-ec",
+		       "rt-agc", "rt-ptt", "rt-mic", "rt-out"];
+
+function rt_save_prefs() {
+	const p = {};
+	for (const id of rt_prefs_keys) {
+		const el = $("#" + id);
+		p[id] = el.type === "checkbox" ? el.checked : el.value;
+	}
+	p.ptt_key = rt.ptt_key;
+	localStorage.setItem("rt_prefs", JSON.stringify(p));
+}
+
+function rt_load_prefs() {
+	let p;
+	try {
+		p = JSON.parse(localStorage.getItem("rt_prefs") || "{}");
+	} catch (e) {
+		return;
+	}
+	for (const id of rt_prefs_keys) {
+		const el = $("#" + id);
+		if (!(id in p))
+			continue;
+		if (el.type === "checkbox")
+			el.checked = !!p[id];
+		else
+			el.value = p[id];
+	}
+	if (p.ptt_key)
+		rt.ptt_key = p.ptt_key;
+}
 
 function rt_params() {
 	const out = {};
 	for (const input of $$("#rt-params input"))
 		out[input.name] = parseFloat(input.value);
+	out.fp16 = $("#rt-fp16").checked ? 1 : 0;
 	return out;
+}
+
+async function rt_load_models() {
+	let info;
+	try {
+		info = await api("api/realtime/info");
+	} catch (e) {
+		return;
+	}
+	const sel = $("#rt-model");
+	sel.innerHTML = "";
+	for (const m of info.models || []) {
+		const o = new Option(m.label, m.id);
+		o.dataset.hint = m.hint;
+		sel.appendChild(o);
+	}
+	rt_load_prefs();
+	if (!sel.value)
+		sel.value = info.default_model;
+	rt_model_hint();
+}
+
+function rt_model_hint() {
+	const o = $("#rt-model").selectedOptions[0];
+	$("#rt-model-hint").textContent = o ? o.dataset.hint : "";
 }
 
 function rt_refresh_outputs() {
@@ -946,7 +1012,7 @@ async function rt_start() {
 		/* no auth configured; token not needed */
 	}
 	const start = { type: "start", sample_rate: rt.ctx.sampleRate,
-			params: rt_params() };
+			model: $("#rt-model").value, params: rt_params() };
 	if (ref.is_voice)
 		start.voice_id = ref.id;
 	else
@@ -1014,8 +1080,9 @@ async function rt_open_audio() {
 	const mic_id = $("#rt-mic").value;
 	const constraints = { audio: {
 		deviceId: mic_id ? { exact: mic_id } : undefined,
-		echoCancellation: false, noiseSuppression: false,
-		autoGainControl: false, channelCount: 1 } };
+		echoCancellation: $("#rt-ec").checked,
+		noiseSuppression: $("#rt-ns").checked,
+		autoGainControl: $("#rt-agc").checked, channelCount: 1 } };
 	rt.mic = await navigator.mediaDevices.getUserMedia(constraints);
 	let ctx;
 	try {
@@ -1046,10 +1113,12 @@ function rt_go_live(info) {
 	rt.capture.connect(mute).connect(ctx.destination);
 	rt.capture.port.onmessage = ev => {
 		if (rt.ws && rt.ws.readyState === WebSocket.OPEN) {
-			rt.ws.send(ev.data);
+			rt.ws.send(ev.data.block);
 			rt.sent++;
 		}
+		rt_show_level(ev.data.level);
 	};
+	rt_apply_gain();
 	src.connect(rt.capture);
 	rt.player = new AudioWorkletNode(ctx, "rt-player", {
 		numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1],
@@ -1062,7 +1131,108 @@ function rt_go_live(info) {
 	rt.running = true;
 	$("#rt-card").classList.add("live");
 	$("#rt-stop").disabled = false;
+	$("#rt-ptt-btn").disabled = !$("#rt-ptt").checked;
+	rt_set_talk(!$("#rt-ptt").checked);
 	rt_render_stats();
+}
+
+/* ---- input level / gain ------------------------------------------------ */
+
+function rt_show_level(level) {
+	if (!level)
+		return;
+	const meter = $("#rt-meter");
+	const pct = Math.max(0, Math.min(100, (level.rms_db + 60) / 60 * 100));
+	meter.style.width = pct + "%";
+	meter.className = level.clipped ? "clip" : level.rms_db > -10 ? "hot" : "";
+	$("#rt-level-text").textContent = Math.round(level.rms_db) + " dB" +
+		(level.clipped ? " CLIP" : "");
+}
+
+function rt_apply_gain() {
+	const db = parseFloat($("#rt-gain").value);
+	$("#rt-gain-out").textContent = (db > 0 ? "+" : "") + db + " dB";
+	if (rt.capture)
+		rt.capture.port.postMessage({ gain: Math.pow(10, db / 20) });
+}
+
+/* ---- push-to-talk ------------------------------------------------------ */
+
+function rt_set_talk(on) {
+	if (rt.talk === on)
+		return;
+	rt.talk = on;
+	if (rt.ws && rt.ws.readyState === WebSocket.OPEN)
+		rt.ws.send(JSON.stringify({ type: "talk", on }));
+	$("#rt-ptt-btn").classList.toggle("talking", on && $("#rt-ptt").checked);
+	$("#rt-ptt-state").textContent = !$("#rt-ptt").checked ? "" :
+		on ? "talking" : "muted (hold key or button)";
+}
+
+function rt_ptt_press() {
+	if (!$("#rt-ptt").checked || !rt.running)
+		return;
+	clearTimeout(rt.ptt_timer);
+	rt.ptt_timer = null;
+	rt.ptt_down = true;
+	rt_set_talk(true);
+}
+
+function rt_ptt_release() {
+	if (!rt.ptt_down)
+		return;
+	rt.ptt_down = false;
+	// Short release tail so the end of the last word is not cut.
+	rt.ptt_timer = setTimeout(() => rt_set_talk(false), PTT_RELEASE_MS);
+}
+
+function rt_key_label(code) {
+	return code.replace(/^Key|^Digit/, "").replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+function rt_on_key(ev, down) {
+	if (rt.ptt_binding && down) {
+		ev.preventDefault();
+		rt.ptt_key = ev.code;
+		rt.ptt_binding = false;
+		$("#rt-ptt-key").textContent = "key: " + rt_key_label(ev.code);
+		rt_save_prefs();
+		return;
+	}
+	if (ev.code !== rt.ptt_key || !$("#rt-ptt").checked)
+		return;
+	const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName);
+	if (typing && ev.code.startsWith("Key"))
+		return;
+	ev.preventDefault();
+	if (down && !ev.repeat)
+		rt_ptt_press();
+	else if (!down)
+		rt_ptt_release();
+}
+
+function rt_ptt_toggle() {
+	const on = $("#rt-ptt").checked;
+	$("#rt-ptt-btn").disabled = !on || !rt.running;
+	rt_set_talk(!on);
+	rt_save_prefs();
+}
+
+function setup_ptt() {
+	$("#rt-ptt-key").textContent = "key: " + rt_key_label(rt.ptt_key);
+	$("#rt-ptt-key").addEventListener("click", () => {
+		rt.ptt_binding = true;
+		$("#rt-ptt-key").textContent = "press a key…";
+	});
+	document.addEventListener("keydown", ev => rt_on_key(ev, true));
+	document.addEventListener("keyup", ev => rt_on_key(ev, false));
+	window.addEventListener("blur", rt_ptt_release);
+	const btn = $("#rt-ptt-btn");
+	for (const evn of ["mousedown", "touchstart"])
+		btn.addEventListener(evn, ev => { ev.preventDefault(); rt_ptt_press(); });
+	for (const evn of ["mouseup", "mouseleave", "touchend", "touchcancel"])
+		btn.addEventListener(evn, rt_ptt_release);
+	$("#rt-ptt").addEventListener("change", rt_ptt_toggle);
 }
 
 function rt_stop(reason) {
@@ -1088,8 +1258,13 @@ function rt_stop(reason) {
 	if (rt.ctx)
 		rt.ctx.close().catch(() => {});
 	rt.capture = rt.player = rt.mic = rt.ctx = null;
+	rt.talk = true;
+	rt.ptt_down = false;
 	$("#rt-card").classList.remove("live");
 	$("#rt-stop").disabled = true;
+	$("#rt-ptt-btn").disabled = true;
+	$("#rt-ptt-btn").classList.remove("talking");
+	$("#rt-meter").style.width = "0";
 	rt_update_button();
 	if (reason)
 		rt_set_stats(reason, "err");
@@ -1106,6 +1281,13 @@ function rt_update_button() {
 function setup_realtime() {
 	rt_restore();
 	rt_refresh_outputs();
+	rt_load_models();
+	setup_ptt();
+	$("#rt-model").addEventListener("change", () => { rt_model_hint(); rt_save_prefs(); });
+	$("#rt-gain").addEventListener("input", () => { rt_apply_gain(); rt_save_prefs(); });
+	rt_apply_gain();
+	for (const id of ["rt-fp16", "rt-ns", "rt-ec", "rt-agc", "rt-mic", "rt-out"])
+		$("#" + id).addEventListener("change", rt_save_prefs);
 	$$("#rt-params input").forEach(i => i.addEventListener("input", () => {
 		rt_refresh_outputs();
 		rt_persist();

@@ -139,6 +139,19 @@ update.bat         (Windows)   options: -UpdateDriver -Torch -DownloadModels
 ./update.sh        (Linux)     options: --update-driver --torch --download-models
 ```
 
+A plain `git pull` also works: nothing the installer creates (`.venv`,
+`vendor/`, `data/`, `.env`) is tracked, so pulls never conflict. After a
+pull, restart the service so it picks up the new code, and install new
+Python dependencies if `requirements-*.txt` changed:
+
+```
+git pull
+.venv/bin/python -m pip install -r requirements-seedvc.txt -r requirements-web.txt
+./service.sh restart          # service.bat restart on Windows
+```
+
+`update.sh` does exactly these steps plus the seed-vc pin and driver check.
+
 This pulls the newest version of this repository, moves the vendored
 Seed-VC to the revision pinned in `seedvc.lock`, upgrades the Python
 dependencies, re-runs the driver / CUDA check and restarts the service.
@@ -231,11 +244,45 @@ cannot keep up: pick *Low latency* with fewer diffusion steps or raise
 delay one to one. The *Noise gate* mutes blocks below a level so room
 noise is not converted.
 
-Real-time mode uses the `seed-uvit-tat-xlsr-tiny` model from Seed-VC's
-`real-time-gui.py` with the same streaming and SOLA crossfade logic; it
-runs in the browser over a WebSocket instead of a desktop window.
-Output device selection needs Chrome or Edge; Firefox plays through the
-default device.
+**Push-to-talk**: tick *Push-to-talk*; the microphone is then muted
+until you hold the bound key (default Right Ctrl, click *key:* to bind
+another) or hold the on-screen button. The key works while the browser
+tab has focus. Release keeps a 250 ms tail so words are not cut. The
+pipeline keeps running while muted, so there is no warm-up delay when
+you press the key.
+
+#### Getting better sound in real time
+
+The default *Tiny* model is Seed-VC's 25 M-parameter real-time model,
+and its quality ceiling is well below the file-conversion models. In
+rough order of effect:
+
+1. **Model: Small (Whisper-small)**. The same 98 M model that file
+   conversion uses, streamed. Clearly better timbre and clarity, about
+   four times the GPU work per block. Use *Block time* 0.4 s or more on
+   an RTX 3060 class card; an RTX 3080/4070 or better handles 0.26 s.
+2. **Reference**: a clean, dry 10 to 20 s clip of one speaker, no
+   music, no reverb. Raise *Reference prompt length* to match it. This
+   is the single biggest factor for how close the timbre gets.
+3. **Input level**: watch the *Input level* meter and set *Input gain*
+   so speech sits around the mark (-18 dB) without CLIP. Quiet or
+   clipped input confuses the content encoder.
+4. **Right context** 1 to 2 s and **Diffusion steps** 16 to 25 (the
+   *Quality* preset). Each adds delay or GPU time; the stats line shows
+   when the GPU is at its limit.
+5. **fp16 off** (default). Half precision is faster but slightly
+   rougher; leave it off unless the stats say the GPU is too slow.
+6. **Noise suppression** on if the room is noisy; leave *Auto gain*
+   and *Echo cancel* off with headphones, they colour the voice.
+
+What real-time mode cannot do: singing (the F0 model is offline only)
+and accent or style conversion (v2). For those, record and convert as a
+file.
+
+Real-time mode uses the streaming and SOLA crossfade logic from
+Seed-VC's `real-time-gui.py`; it runs in the browser over a WebSocket
+instead of a desktop window. Output device selection needs Chrome or
+Edge; Firefox plays through the default device.
 
 ## Configuration
 

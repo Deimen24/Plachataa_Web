@@ -26,7 +26,28 @@ log = logging.getLogger("plachataa.realtime")
 FRAMES_PER_SECOND = 50		# content-encoder frame rate (20 ms)
 SAMPLES_16K_PER_FRAME = 320
 
+# Model presets usable in real time.  "tiny" is the upstream real-time
+# model; "small" is the offline v1 speech model, noticeably better but
+# roughly 4x the GPU work per block.
+RT_MODELS = {
+	"tiny": {
+		"label": "Tiny (fastest, real-time model)",
+		"ckpt": "DiT_uvit_tat_xlsr_ema.pth",
+		"config": "config_dit_mel_seed_uvit_xlsr_tiny.yml",
+		"hint": "25M params. Lowest delay; works on any RTX card.",
+	},
+	"small": {
+		"label": "Small (better quality, Whisper-small)",
+		"ckpt": "DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth",
+		"config": "config_dit_mel_seed_uvit_whisper_small_wavenet.yml",
+		"hint": "98M params, same model as file conversion. Needs a "
+			"block time of 0.4 s or more on mid-range cards.",
+	},
+}
+DEFAULT_MODEL = "tiny"
+
 DEFAULT_PARAMS = {
+	"fp16": 0,			# 1 = half precision (faster, slightly worse)
 	"block_time": 0.25,		# seconds of audio per block
 	"crossfade_time": 0.05,
 	"extra_time_ce": 2.5,		# left context for the content encoder
@@ -39,6 +60,7 @@ DEFAULT_PARAMS = {
 }
 
 PARAM_LIMITS = {
+	"fp16": (0, 1),
 	"block_time": (0.04, 3.0),
 	"crossfade_time": (0.02, 0.5),
 	"extra_time_ce": (0.5, 10.0),
@@ -61,6 +83,7 @@ def clamp_params(raw):
 				continue
 			out[key] = min(max(val, lo), hi)
 	out["diffusion_steps"] = int(out["diffusion_steps"])
+	out["fp16"] = bool(int(out["fp16"]))
 	if out["extra_time_ce"] < out["extra_time"]:
 		out["extra_time_ce"] = out["extra_time"]
 	return out
@@ -68,11 +91,12 @@ def clamp_params(raw):
 
 class RealtimeModels:
 	"""
-	The tiny model set: XLSR content encoder, DiT, CAMPPlus style
-	encoder and HiFT vocoder (port of load_models in real-time-gui.py).
+	One model set (port of load_models in real-time-gui.py): content
+	encoder (XLSR or Whisper), DiT, CAMPPlus style encoder and vocoder
+	(HiFT or BigVGAN).
 	"""
 
-	def __init__(self, device):
+	def __init__(self, device, preset=DEFAULT_MODEL):
 		import torch
 		import yaml
 		from hf_utils import load_custom_model_from_hf
@@ -83,10 +107,13 @@ class RealtimeModels:
 
 		self.torch = torch
 		self.device = device
+		self.preset = preset
+		# Encoders run in half precision on CUDA as upstream does; the
+		# CFM/vocoder precision is a per-session choice (fp16 param).
 		self.half = device.type == "cuda"
+		spec = RT_MODELS[preset]
 		ckpt, cfg_path = load_custom_model_from_hf(
-			"Plachta/Seed-VC", "DiT_uvit_tat_xlsr_ema.pth",
-			"config_dit_mel_seed_uvit_xlsr_tiny.yml")
+			"Plachta/Seed-VC", spec["ckpt"], spec["config"])
 		with open(cfg_path, "r", encoding="utf-8") as fh:
 			config = yaml.safe_load(fh)
 		params = recursive_munch(config["model_params"])
@@ -115,7 +142,13 @@ class RealtimeModels:
 		self.campplus.eval().to(device)
 
 		self.vocoder = self._load_vocoder(params, load_custom_model_from_hf)
-		self.semantic_fn = self._load_xlsr(config)
+		tok_type = config["model_params"]["speech_tokenizer"]["type"]
+		if tok_type == "xlsr":
+			self.semantic_fn = self._load_xlsr(config)
+		elif tok_type == "whisper":
+			self.semantic_fn = self._load_whisper(config)
+		else:
+			raise RuntimeError("unsupported speech tokenizer " + tok_type)
 
 		fmax = spect.get("fmax", "None")
 		self.mel_args = {
@@ -151,12 +184,38 @@ class RealtimeModels:
 			return gen.eval().to(self.device)
 		raise RuntimeError("unsupported vocoder " + str(kind))
 
+	def _load_whisper(self, config):
+		from transformers import AutoFeatureExtractor, WhisperModel
+		torch = self.torch
+		name = config["model_params"]["speech_tokenizer"]["name"]
+		dtype = torch.float16 if self.half else torch.float32
+		whisper = WhisperModel.from_pretrained(name, torch_dtype=dtype)
+		whisper = whisper.to(self.device).eval()
+		del whisper.decoder
+		extractor = AutoFeatureExtractor.from_pretrained(name)
+
+		def semantic_fn(waves_16k):
+			inputs = extractor([waves_16k.squeeze(0).cpu().numpy()],
+					   return_tensors="pt",
+					   return_attention_mask=True,
+					   sampling_rate=16000)
+			feats = whisper._mask_input_features(
+				inputs.input_features,
+				attention_mask=inputs.attention_mask).to(self.device)
+			with torch.no_grad():
+				out = whisper.encoder(feats.to(whisper.encoder.dtype),
+						      head_mask=None,
+						      output_attentions=False,
+						      output_hidden_states=False,
+						      return_dict=True)
+			hidden = out.last_hidden_state.float()
+			return hidden[:, :waves_16k.size(-1) // 320 + 1]
+		return semantic_fn
+
 	def _load_xlsr(self, config):
 		from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
 		torch = self.torch
 		tok = config["model_params"]["speech_tokenizer"]
-		if tok["type"] != "xlsr":
-			raise RuntimeError("real-time preset must use xlsr tokenizer")
 		extractor = Wav2Vec2FeatureExtractor.from_pretrained(tok["name"])
 		w2v = Wav2Vec2Model.from_pretrained(tok["name"])
 		w2v.encoder.layers = w2v.encoder.layers[:tok["output_layer"]]
@@ -218,6 +277,8 @@ class RealtimeSession:
 		self.client_sr = int(client_sr) if client_sr else self.sr
 		self.lock = threading.Lock()
 		self.stats = {"blocks": 0, "infer_ms": 0.0, "gated": 0}
+		self.talk = True		# push-to-talk: False mutes the input
+		self.fp16 = bool(self.p["fp16"]) and self.device.type == "cuda"
 		self._layout()
 		wav, _ = librosa.load(str(reference_path), sr=self.sr)
 		self._prompt(wav)
@@ -266,6 +327,8 @@ class RealtimeSession:
 	def info(self):
 		total = self.input_wav.numel()
 		return {
+			"model": self.m.preset,
+			"fp16": self.fp16,
 			"sr": self.sr,
 			"client_sr": self.client_sr,
 			"block_samples": self.client_block,
@@ -312,8 +375,8 @@ class RealtimeSession:
 			block = self.in_res(block, self.block_frame)
 			self._push(block)
 			with self.torch.no_grad():
-				out = self._infer() if self._voiced(block) \
-					else self._silence()
+				voiced = self.talk and self._voiced(block)
+				out = self._infer() if voiced else self._silence()
 				out = self._sola(out)
 				out = self.out_res(out, self.client_block)
 			self.stats["blocks"] += 1
@@ -360,9 +423,8 @@ class RealtimeSession:
 		cond = m.model.length_regulator(s_alt, ylens=lens, n_quantizers=3,
 						f0=None)[0]
 		cat = torch.cat([self.prompt_cond, cond], dim=1)
-		dtype = torch.float16 if m.half else torch.float32
-		with torch.autocast(device_type=self.device.type, dtype=dtype,
-				    enabled=m.half):
+		with torch.autocast(device_type=self.device.type,
+				    dtype=torch.float16, enabled=self.fp16):
 			target = m.model.cfm.inference(
 				cat, torch.LongTensor([cat.size(1)]).to(self.device),
 				self.mel2, self.style, None,

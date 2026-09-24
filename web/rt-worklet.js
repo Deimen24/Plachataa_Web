@@ -13,6 +13,25 @@ class RtCapture extends AudioWorkletProcessor {
 		this.block = options.processorOptions.block;
 		this.buf = new Float32Array(this.block);
 		this.fill = 0;
+		this.gain = 1.0;
+		this.port.onmessage = ev => {
+			if (ev.data && ev.data.gain !== undefined)
+				this.gain = ev.data.gain;
+		};
+	}
+
+	/* Peak and RMS of the finished block, in dBFS, for the level meter. */
+	level() {
+		let peak = 0, sum = 0;
+		for (let i = 0; i < this.block; i++) {
+			const v = Math.abs(this.buf[i]);
+			if (v > peak)
+				peak = v;
+			sum += v * v;
+		}
+		const db = x => x > 0 ? 20 * Math.log10(x) : -100;
+		return { peak_db: db(peak), rms_db: db(Math.sqrt(sum / this.block)),
+			 clipped: peak >= 0.99 };
 	}
 
 	process(inputs, outputs) {
@@ -24,11 +43,15 @@ class RtCapture extends AudioWorkletProcessor {
 		let i = 0;
 		while (i < ch.length) {
 			const n = Math.min(ch.length - i, this.block - this.fill);
-			this.buf.set(ch.subarray(i, i + n), this.fill);
+			for (let k = 0; k < n; k++) {
+				const v = ch[i + k] * this.gain;
+				this.buf[this.fill + k] = v > 1 ? 1 : v < -1 ? -1 : v;
+			}
 			this.fill += n;
 			i += n;
 			if (this.fill === this.block) {
-				this.port.postMessage(this.buf.buffer.slice(0));
+				this.port.postMessage({ block: this.buf.buffer.slice(0),
+							level: this.level() });
 				this.fill = 0;
 			}
 		}

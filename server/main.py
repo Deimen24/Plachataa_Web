@@ -25,7 +25,8 @@ from pydantic import BaseModel, Field
 from . import settings
 from .audio import ffmpeg_path, probe_duration, ensure_ffmpeg_on_path
 from .engine import engine, MODELS, MODEL_INFO, FAMILIES, EngineError
-from .realtime import DEFAULT_PARAMS as RT_DEFAULTS, PARAM_LIMITS as RT_LIMITS
+from .realtime import DEFAULT_PARAMS as RT_DEFAULTS, PARAM_LIMITS as RT_LIMITS, \
+	RT_MODELS, DEFAULT_MODEL as RT_DEFAULT_MODEL
 from .jobs import JobStore
 from .library import make_libraries
 
@@ -352,8 +353,11 @@ RT_TOKEN_TTL = 120
 @app.get("/api/realtime/info")
 def api_realtime_info():
 	return {"defaults": RT_DEFAULTS, "limits": RT_LIMITS,
+		"models": [{"id": k, "label": v["label"], "hint": v["hint"]}
+			   for k, v in RT_MODELS.items()],
+		"default_model": RT_DEFAULT_MODEL,
 		"active": rt_active,
-		"loaded": engine.rt is not None}
+		"loaded": sorted(engine.rt)}
 
 
 @app.post("/api/realtime/token")
@@ -417,6 +421,8 @@ async def ws_realtime(ws: WebSocket):
 						break
 					worker = asyncio.create_task(
 						_rt_worker(ws, session, queue))
+				elif cmd.get("type") == "talk" and session:
+					session.talk = bool(cmd.get("on", True))
 				elif cmd.get("type") == "stop":
 					break
 			elif msg.get("bytes") is not None and session is not None:
@@ -466,12 +472,16 @@ async def _rt_start(ws, cmd):
 	except HTTPException as exc:
 		await _rt_send(ws, {"type": "error", "message": exc.detail})
 		return None
+	preset = cmd.get("model") or RT_DEFAULT_MODEL
+	if preset not in RT_MODELS:
+		await _rt_send(ws, {"type": "error", "message": "unknown model"})
+		return None
 	await _rt_send(ws, {"type": "loading", "elapsed": 0})
 	beat = asyncio.create_task(_rt_heartbeat(ws, time.time()))
 	try:
-		await asyncio.to_thread(engine.load, "rt")
+		models = await asyncio.to_thread(engine.load_rt, preset)
 		session = await asyncio.to_thread(
-			RealtimeSession, engine.rt, ref, cmd.get("params") or {},
+			RealtimeSession, models, ref, cmd.get("params") or {},
 			cmd.get("sample_rate"))
 	except Exception as exc:
 		log.exception("real-time start failed")

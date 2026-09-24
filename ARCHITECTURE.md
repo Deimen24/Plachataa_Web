@@ -75,15 +75,28 @@ atomic JSON persistence.
 
 ### `server/realtime.py`
 Port of `real-time-gui.py` from seed-vc without the desktop GUI and
-without sounddevice. `RealtimeModels` loads the tiny model set
-(`seed-uvit-tat-xlsr-tiny`: XLSR content encoder truncated to 12
-layers, 25M-parameter DiT, CAMPPlus, HiFT vocoder) as the `rt` family
-of the engine. `RealtimeSession` holds the sliding window and, per
-block:
+without sounddevice. `RealtimeModels` loads one of two presets as the
+`rt` family of the engine (a dict keyed by preset, so both can stay
+resident):
+
+- `tiny`: `seed-uvit-tat-xlsr-tiny` (XLSR content encoder truncated to
+  12 layers, 25M-parameter DiT, HiFT vocoder), upstream's real-time
+  model;
+- `small`: `seed-uvit-whisper-small-wavenet` (Whisper-small encoder,
+  98M DiT, BigVGAN), the offline v1 speech model streamed with the same
+  window logic. Both encoders produce 50 frames/s, which is all the
+  window arithmetic assumes.
+
+Encoders run in half precision on CUDA as upstream does; the CFM and
+vocoder run in fp32 unless the session's `fp16` parameter is set
+(upstream's real-time default is fp32). `RealtimeSession` holds the
+sliding window and, per block:
 
 1. shifts the model-rate window and the 16 kHz copy fed to the encoder;
 2. optionally mutes the block with an RMS gate (replaces the funasr
-   VAD, which is not installed);
+   VAD, which is not installed) or because push-to-talk is released
+   (`talk` flag, toggled by a JSON `talk` message); the window keeps
+   sliding while muted so there is no warm-up when talk resumes;
 3. runs the content encoder over the whole window, drops the
    `extra_time_ce - extra_time` head, length-regulates, prepends the
    reference prompt and runs the CFM + vocoder;
@@ -107,9 +120,13 @@ Because browsers cannot set headers on WebSockets, a page protected by
 basic auth first fetches a single-use token.
 
 ### `web/rt-worklet.js`
-Two `AudioWorkletProcessor`s: `rt-capture` packs 128-frame render
-quanta into server-sized blocks; `rt-player` is a ring buffer primed
-with two blocks that outputs silence on underrun and reports it. The
+Two `AudioWorkletProcessor`s: `rt-capture` applies the input gain,
+packs 128-frame render quanta into server-sized blocks and reports
+peak/RMS per block for the level meter; `rt-player` is a ring buffer
+primed with two blocks that outputs silence on underrun and reports
+it. Push-to-talk is handled on the main thread (key or button, with a
+250 ms release tail) and only flips the server's `talk` flag; audio
+keeps flowing so the model's context stays warm. The
 page asks for a 22.05 kHz `AudioContext` so the browser resamples the
 microphone once; if the browser refuses, the server resamples.
 

@@ -104,7 +104,7 @@ class Engine:
 		self.lock = threading.Lock()
 		self.v1 = None
 		self.v2 = None
-		self.rt = None
+		self.rt = {}
 		self._device = None
 		self._torch = None
 		self.load_times = {}
@@ -143,7 +143,7 @@ class Engine:
 			"loaded": {
 				"v1": self.v1 is not None,
 				"v2": self.v2 is not None,
-				"rt": self.rt is not None,
+				"rt": bool(self.rt),
 			},
 			"loading": sorted(self.loading),
 			"load_errors": self.load_errors,
@@ -229,17 +229,34 @@ class Engine:
 		self.load_times["v2"] = round(time.time() - t0, 1)
 		log.info("v2 ready in %.1fs", self.load_times["v2"])
 
-	def _load_rt(self):
-		if self.rt is not None:
+	def _load_rt(self, preset=None):
+		from .realtime import RealtimeModels, DEFAULT_MODEL
+		preset = preset or DEFAULT_MODEL
+		if preset in self.rt:
 			return
 		bootstrap()
+		_configure_pydub()
 		t0 = time.time()
-		log.info("loading seed-vc real-time models (this downloads ~2 GB "
-			 "the first time)")
-		from .realtime import RealtimeModels
-		self.rt = RealtimeModels(self.device())
+		log.info("loading real-time model '%s' (downloads on first use)",
+			 preset)
+		self.rt[preset] = RealtimeModels(self.device(), preset)
 		self.load_times["rt"] = round(time.time() - t0, 1)
-		log.info("rt ready in %.1fs", self.load_times["rt"])
+		log.info("rt/%s ready in %.1fs", preset, self.load_times["rt"])
+
+	def load_rt(self, preset):
+		"""Load one real-time preset (blocking) and return it."""
+		with self.lock:
+			self.loading.add("rt")
+			self.load_errors.pop("rt", None)
+			try:
+				self._load_rt(preset)
+			except Exception as exc:
+				self.load_errors["rt"] = "%s: %s" % (
+					type(exc).__name__, exc)
+				raise
+			finally:
+				self.loading.discard("rt")
+		return self.rt[preset]
 
 	def _dtype(self):
 		torch = self.torch()
@@ -256,7 +273,7 @@ class Engine:
 				self.v2 = None
 				self.load_times.pop("v2", None)
 			if family in (None, "rt"):
-				self.rt = None
+				self.rt = {}
 				self.load_times.pop("rt", None)
 			self._free_memory()
 

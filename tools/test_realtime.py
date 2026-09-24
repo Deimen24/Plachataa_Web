@@ -48,6 +48,8 @@ class StubModel:
 
 
 class StubModels:
+	preset = "tiny"
+
 	def __init__(self):
 		self.device = torch.device("cpu")
 		self.half = False
@@ -101,6 +103,13 @@ def test_session(client_sr):
 	half = gated.shape[0] // 2
 	assert np.abs(gated[half:]).max() < 0.05, np.abs(gated[half:]).max()
 	assert s.stats["gated"] == 1
+	# push-to-talk released: loud input must be muted too
+	s.talk = False
+	muted = s.process(loud)
+	assert np.abs(muted[half:]).max() < 0.05
+	s.talk = True
+	assert np.abs(s.process(loud)).max() > 0.05
+	assert info["fp16"] is False
 	print("ok: session at client rate %d (block %d samples, delay %d ms)"
 	      % (client_sr, info["block_samples"], info["algorithm_latency_ms"]))
 	return s
@@ -118,18 +127,19 @@ def test_websocket():
 	from fastapi.testclient import TestClient
 	from server import main as srv
 	from server.engine import engine
-	engine.rt = StubModels()
-	engine.load = lambda family: None
+	engine.rt = {"tiny": StubModels()}
+	engine.load_rt = lambda preset: engine.rt["tiny"]
 	ref = srv.voices.add_copy("ref", Path(settings.DATA_DIR) / "ref.wav")
 	client = TestClient(srv.app)
 	with client.websocket_connect("/ws/realtime") as ws:
 		ws.send_text(json.dumps({"type": "start", "voice_id": ref["id"],
-					 "sample_rate": 48000,
-					 "params": {"block_time": 0.2}}))
+					 "sample_rate": 48000, "model": "tiny",
+					 "params": {"block_time": 0.2, "fp16": 1}}))
 		msg = json.loads(ws.receive_text())
 		assert msg["type"] == "loading", msg
 		msg = json.loads(ws.receive_text())
 		assert msg["type"] == "ready", msg
+		assert msg["model"] == "tiny" and msg["fp16"] is False  # cpu
 		n = msg["block_samples"]
 		block = (0.3 * np.random.randn(n)).astype(np.float32)
 		for _ in range(3):
@@ -140,9 +150,17 @@ def test_websocket():
 			if "bytes" in data and data["bytes"] is not None:
 				assert len(data["bytes"]) == n * 4
 				got += 1
+		ws.send_text(json.dumps({"type": "talk", "on": False}))
+		ws.send_bytes(block.tobytes())
+		while True:
+			data = ws.receive()
+			if "bytes" in data and data["bytes"] is not None:
+				out = np.frombuffer(data["bytes"], dtype=np.float32)
+				assert np.abs(out[n // 2:]).max() < 0.05
+				break
 		ws.send_text(json.dumps({"type": "stop"}))
 	assert not srv.rt_active
-	print("ok: websocket start/stream/stop")
+	print("ok: websocket start/stream/talk/stop")
 
 
 def main():

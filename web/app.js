@@ -192,20 +192,24 @@ function render_slot(slot) {
 			!!item.is_example;
 }
 
-async function upload_file(slot, file, name) {
+async function upload_file(slot, file, name, then_save) {
 	const form = new FormData();
 	form.append("file", file, name || file.name);
 	if (name)
 		form.append("name", name);
 	toast("Uploading " + (name || file.name) + "…");
+	let item;
 	try {
-		const item = await api("api/uploads", { method: "POST", body: form });
+		item = await api("api/uploads", { method: "POST", body: form });
 		state.uploads.unshift(item);
 		set_slot(slot, item);
 		toast("Uploaded " + item.name);
 	} catch (e) {
 		toast("Upload failed: " + e.message, true);
+		return;
 	}
+	if (then_save && slot === "reference")
+		await save_voice("New voice " + new Date().toLocaleDateString());
 }
 
 function setup_drop(zone) {
@@ -346,7 +350,8 @@ async function toggle_record(slot, btn) {
 		const name = "recording-" + slot + "-" +
 			new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") +
 			"." + ext;
-		upload_file(slot, blob, name);
+		// A recorded reference goes straight into the shared library.
+		upload_file(slot, blob, name, slot === "reference");
 	};
 	rec.start();
 	state.recorder = rec;
@@ -397,11 +402,12 @@ function use_voice(v) {
 	rt_update_button();
 }
 
-async function save_voice() {
+async function save_voice(suggested) {
 	const item = state.slots.reference;
 	if (!item || item.is_voice || item.is_example)
 		return;
-	const name = prompt("Name for this voice:", item.name.replace(/\.[^.]+$/, ""));
+	const name = prompt("Name for this voice (saved on the server, visible to everyone):",
+			    suggested || item.name.replace(/\.[^.]+$/, ""));
 	if (!name)
 		return;
 	try {

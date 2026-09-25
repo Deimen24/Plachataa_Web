@@ -22,6 +22,9 @@ the real-time mode and speak through the reference voice live.
 - Drag and drop, file picker or **microphone recording** for source and
   reference audio; browser recordings are transcoded server-side.
 - **Voice library**: save reference clips under a name and reuse them.
+  The library lives on the server, so every user of the page sees and
+  can use the same voices; recorded references are saved to it
+  automatically.
 - **Job queue** with live progress, streamed preview while converting,
   cancel, download, and "use as source" to chain conversions.
 - Presets (fast / default / quality) and every Seed-VC parameter
@@ -211,8 +214,11 @@ Settings in `.env` on the gaming PC:
 1. **Source audio**: the recording whose voice you want to change.
    Any length; long files are processed in ~30 s windows.
 2. **Reference voice**: a clean clip of the target speaker, 5 to 25 s
-   (longer clips are clipped to 25 s). Click *save to library* to keep
-   it.
+   (longer clips are clipped to 25 s). A recording made in the browser
+   is saved to the library right away under the name you give it; an
+   uploaded file is kept with *save to library*. The library is stored
+   in `data/voices/` on the server and shared by everyone who uses the
+   page. There are no per-user accounts.
 3. **Model**
    - *Voice conversion (v1)*: speech, fastest, good default.
    - *Singing voice conversion (v1 + F0)*: pitch-conditioned 44.1 kHz
